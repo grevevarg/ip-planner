@@ -1,0 +1,211 @@
+# Example: three companies connected through one ISP.
+#
+# ILLUSTRATIVE VALUES ONLY. Nothing in this file is the real assignment; it
+# exists to show every part of the schema. Replace the addresses, VLANs and
+# device names with the ones you were given.
+
+version: 1
+meta:
+  title: "Lab 5 – Linky / SilverCrest / Bluestar"
+  authors: ["ntsu"]
+  date: 2026-11-16
+  notes: |
+    ISP and everything inside the red circle may not be changed.
+    All values in this example are illustrative.
+
+diagram:
+  layout: elk            # dagre | elk
+  direction: down        # up | down | left | right
+  theme: default         # default | dark | sketch
+
+external:                # things you connect to but don't own
+  # Illustrative: a made-up ISP with made-up public addresses.
+  - id: isp
+    name: ISP
+    locked: true
+    devices:
+      - id: isp-r1
+        name: ISP
+        type: router
+        interfaces:
+          - { name: f0/1, address: 203.12.20.17/28 }
+          - { name: f0/0, address: 194.50.16.33/28 }
+          - { name: f1/0, address: 85.24.7.1/30 }
+          - { name: f2/0, link: internet }   # link to a cloud node with no address
+      - id: internet
+        name: Internet
+        type: cloud
+
+sites:
+  # Illustrative: LinkyAB is not the real site from the assignment.
+  - id: linky
+    name: LinkyAB
+    supernet: 10.10.0.0/16
+    color: "#16a34a"
+    wan:
+      device: linky-r1
+      interface: f0/0
+      address: 203.12.20.30/28
+      gateway: 203.12.20.17
+      nat: true
+    vlans:
+      - id: 10
+        name: Marknad
+        hosts: 40
+        # subnet omitted → auto-allocated (VLSM) inside supernet
+        dhcp: { mode: server, on: linky-r1 }
+      - id: 20
+        name: Produktion
+        hosts: 60
+        subnet: 10.10.1.0/26
+        gateway: 10.10.1.1/26          # default: first usable
+        dhcp:
+          mode: relay
+          server: 10.10.99.10
+          pool: { start: 10.10.1.20, end: 10.10.1.62 }
+          exclude: [10.10.1.2-10.10.1.19]
+      - id: 99
+        name: Management
+        hosts: 10
+        subnet: 10.10.99.0/28
+        native: false
+        static:
+          - { name: Huvudswitch_Linky, ip: 10.10.99.2, role: switch-mgmt }
+          - { name: dhcp01, ip: 10.10.99.10, role: DHCP server }
+    devices:
+      - id: linky-r1
+        name: LinkyAB
+        type: router
+        interfaces:
+          - { name: f0/0, role: wan }
+          - name: f0/1
+            role: trunk
+            subinterfaces: auto        # one .<vlan> subif per VLAN, address = VLAN gateway
+      - id: linky-sw1
+        name: Huvudswitch_Linky
+        type: l3switch
+        icon: l3switch                 # optional; defaults to type
+        ports:
+          - { range: "g0/1", mode: trunk, allowed: [10, 20, 99], link: linky-r1:f0/1 }
+          - { range: "f0/1-10", mode: access, vlan: 10 }
+          - { range: "f0/11-20", mode: access, vlan: 20 }
+          - { range: "f0/24", mode: access, vlan: 99 }
+      - id: linky-dhcp01
+        name: dhcp01
+        type: server
+        interfaces:
+          - { name: eth0, vlan: 99, address: 10.10.99.10/28, link: linky-sw1:f0/24 }
+
+  # Illustrative: SilverCrest is not the real site from the assignment.
+  - id: silvercrest
+    name: SilverCrest
+    supernet: 10.20.0.0/16
+    color: "#64748b"
+    wan:
+      device: silvercrest-r1
+      interface: f0/1
+      address: 85.24.7.2/30
+      gateway: 85.24.7.1
+      nat: true
+    vlans:
+      - id: 10
+        name: Kontor
+        hosts: 25
+        growth_percent: 20
+        dhcp: { mode: server, on: silvercrest-r1 }
+      - id: 30
+        name: Lager
+        hosts: 12
+        dhcp: { mode: server, on: silvercrest-r1 }
+    devices:
+      - id: silvercrest-r1
+        name: SilverCrest
+        type: router
+        interfaces:
+          - { name: f0/1, role: wan }
+          - { name: f0/0, role: p2p }
+          - { name: f1/0, role: trunk, subinterfaces: auto }
+      - id: silvercrest-sw1
+        name: Switch_SilverCrest
+        type: switch
+        ports:
+          - { range: "g0/1", mode: trunk, allowed: [10, 30], link: silvercrest-r1:f1/0 }
+          - { range: "f0/1-16", mode: access, vlan: 10 }
+          - { range: "f0/17-24", mode: access, vlan: 30 }
+
+  # Illustrative: Bluestar AB is not the real site from the assignment.
+  - id: bluestar
+    name: Bluestar AB
+    supernet: 172.16.100.0/24
+    color: "#2563eb"
+    wan: { device: bluestar-r1, interface: f0/1, address: 194.50.16.46/28, gateway: 194.50.16.33, nat: true }
+    vlans:
+      - id: 10
+        name: Admin
+        hosts: 20
+        subnet: 172.16.100.0/27
+        dhcp: { mode: server, on: bluestar-r1 }
+      - id: 20
+        name: Utveckling
+        hosts: 50
+        dhcp: { mode: server, on: bluestar-r1 }
+    devices:
+      - id: bluestar-r1
+        name: Bluestar
+        type: router
+        interfaces:
+          - { name: f0/1, role: wan }
+          - { name: f0/0, role: p2p }
+          - { name: f1/0, role: trunk, subinterfaces: auto }
+      - id: bluestar-sw1
+        name: Switch_Bluestar
+        type: switch
+        ports:
+          - { range: "g0/1", mode: trunk, allowed: [10, 20], link: bluestar-r1:f1/0 }
+          - { range: "f0/1-12", mode: access, vlan: 10 }
+          - { range: "f0/13-24", mode: access, vlan: 20 }
+
+links:                    # point-to-point links that aren't WAN or VLAN
+  - id: buried-cable
+    name: Nedgrävd kabel
+    subnet: 10.255.0.0/30
+    a: { endpoint: silvercrest-r1:f0/0 }        # address auto = .1
+    b: { endpoint: bluestar-r1:f0/0 }           # address auto = .2
+
+tunnels:
+  - id: vpn-linky-bluestar
+    name: VPN Linky – Bluestar
+    type: ipsec-vti        # ipsec-policy | ipsec-vti | gre | gre-ipsec | wireguard
+    a: { device: linky-r1, underlay: f0/0 }     # peer IP = that interface's address
+    b: { device: bluestar-r1, underlay: f0/1 }
+    subnet: 10.255.255.0/30                     # required for vti/gre/wireguard, forbidden for ipsec-policy
+    protected:                                  # default: all VLAN subnets of each side
+      a: auto
+      b: auto
+    routing: static        # static | ospf | eigrp | bgp
+    crypto:
+      ike: 2
+      encryption: aes-256
+      integrity: sha256
+      dh_group: 14
+      lifetime_s: 86400
+      psk_ref: "given by teacher"
+
+# The values the teacher handed out for locked objects. If a locked object
+# stops matching its baseline, the app reports LOCKED_CHANGED.
+locked_baseline:
+  isp:
+    id: isp
+    name: ISP
+    devices:
+      - id: isp-r1
+        name: ISP
+        type: router
+        interfaces:
+          - { name: f0/1, address: 203.12.20.17/28 }
+          - { name: f0/0, address: 194.50.16.33/28 }
+          - { name: f1/0, address: 85.24.7.1/30 }
+          - { name: f2/0, link: internet }
+      - id: internet
+        name: Internet
+        type: cloud

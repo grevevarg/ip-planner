@@ -1,0 +1,844 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://netplan.invalid/schema/v1.json",
+  "title": "Netplan",
+  "description": "One YAML file describing a lab network: sites, VLANs, subnets, devices, interfaces, point-to-point links and VPN tunnels. The plan tables and the topology diagram are both generated from it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "version": {
+      "description": "Schema version of the file. Must be 1.",
+      "const": 1
+    },
+    "meta": {
+      "$ref": "#/$defs/meta",
+      "description": "Title block shown on the cover of the plan and in the page footer of the PDF."
+    },
+    "diagram": {
+      "$ref": "#/$defs/diagram",
+      "description": "Settings for the generated D2 topology diagram."
+    },
+    "transit_pool": {
+      "$ref": "#/$defs/cidr",
+      "description": "Address block that point-to-point links without their own `subnet` are auto-allocated from (a /30 each, or a /31 when the link sets `p2p: true`). Leave it out if every link has an explicit subnet.",
+      "examples": ["10.255.0.0/24"]
+    },
+    "external": {
+      "description": "Networks you connect to but do not own, for example the ISP. Their devices appear in the topology and their addresses take part in overlap and duplicate checks.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/externalGroup" }
+    },
+    "sites": {
+      "description": "The sites (companies, offices, labs) you are planning. Each site gets its own section in the plan and its own container in the topology.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/site" }
+    },
+    "links": {
+      "description": "Point-to-point links between two device interfaces that are neither a site WAN connection nor a VLAN, for example a leased line or a cable between two routers.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/link" }
+    },
+    "tunnels": {
+      "description": "VPN tunnels between two devices. Drawn dashed in the topology and listed in the VPN section of the plan.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/tunnel" }
+    },
+    "locked_baseline": {
+      "description": "The values you were given for locked objects, keyed by the object's id (for a VLAN use `<site-id>:<vlan-id>`, e.g. `linky:10`). Each value is a copy of the object exactly as it was handed out. When an object marked `locked: true` no longer matches its baseline, the app reports `LOCKED_CHANGED`. The `locked` flag itself is ignored in the comparison.",
+      "type": "object",
+      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*(:[0-9]+)?$" },
+      "additionalProperties": {
+        "description": "A copy of the locked object as it was given.",
+        "type": "object"
+      },
+      "examples": [{ "isp": { "id": "isp", "name": "ISP", "devices": [] } }]
+    }
+  },
+  "$defs": {
+    "slug": {
+      "title": "Slug",
+      "description": "A stable identifier: lowercase letters, digits and hyphens, starting with a letter or digit. Used to refer to the object from elsewhere in the file.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "examples": ["linky-r1"]
+    },
+    "ipv4": {
+      "title": "IPv4 address",
+      "description": "An IPv4 address in dotted-quad notation, without a prefix length.",
+      "type": "string",
+      "format": "ipv4",
+      "examples": ["10.10.1.1"]
+    },
+    "cidr": {
+      "title": "CIDR",
+      "description": "An IPv4 address with a prefix length. For a subnet the address must be the network address; for an interface it is the interface's own address.",
+      "type": "string",
+      "pattern": "^(\\d{1,3}\\.){3}\\d{1,3}/\\d{1,2}$",
+      "examples": ["10.10.1.0/26"]
+    },
+    "address": {
+      "title": "Address",
+      "description": "An IPv4 address, optionally followed by a prefix length. When the prefix is given it must match the subnet the address lives in.",
+      "type": "string",
+      "pattern": "^(\\d{1,3}\\.){3}\\d{1,3}(/\\d{1,2})?$",
+      "examples": ["10.10.1.1", "10.10.1.1/26"]
+    },
+    "meta": {
+      "title": "Meta",
+      "description": "Document information shown on the cover of the plan.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "description": "Title of the plan. Also used in the PDF footer and as the suggested file name when saving.",
+          "type": "string",
+          "examples": ["Lab 5 – Linky / SilverCrest / Bluestar"]
+        },
+        "authors": {
+          "description": "People who wrote the plan.",
+          "type": "array",
+          "items": { "type": "string" },
+          "examples": [["ntsu"]]
+        },
+        "date": {
+          "description": "Date of the plan in ISO format (YYYY-MM-DD).",
+          "type": "string",
+          "format": "date",
+          "examples": ["2026-11-16"]
+        },
+        "notes": {
+          "description": "Free text shown on the cover, for example assumptions or constraints given in the assignment.",
+          "type": "string"
+        }
+      }
+    },
+    "diagram": {
+      "title": "Diagram",
+      "description": "Settings for the generated D2 topology diagram.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "layout": {
+          "description": "Layout engine that positions the nodes.",
+          "enum": ["dagre", "elk"],
+          "x-enumDescriptions": {
+            "dagre": "Fast layered layout. Good for small and medium diagrams.",
+            "elk": "Eclipse Layout Kernel. Slower, but usually routes connections more cleanly when containers are nested."
+          },
+          "default": "dagre"
+        },
+        "direction": {
+          "description": "Direction the diagram flows in.",
+          "enum": ["up", "down", "left", "right"],
+          "x-enumDescriptions": {
+            "up": "Bottom to top.",
+            "down": "Top to bottom.",
+            "left": "Right to left.",
+            "right": "Left to right."
+          },
+          "default": "down"
+        },
+        "theme": {
+          "description": "Visual theme of the diagram. Printing always uses the diagram as rendered on screen.",
+          "enum": ["default", "dark", "sketch"],
+          "x-enumDescriptions": {
+            "default": "Light background with neutral colours.",
+            "dark": "Dark background.",
+            "sketch": "Hand-drawn look on a light background."
+          },
+          "default": "default"
+        },
+        "extra_d2": {
+          "description": "Raw D2 source appended verbatim after the generated diagram. Use it to add notes or override styles without changing the generator.",
+          "type": "string",
+          "examples": ["legend: \"Dashed = VPN\""]
+        }
+      }
+    },
+    "externalGroup": {
+      "title": "ExternalGroup",
+      "description": "A group of devices you connect to but do not own, such as an ISP. Drawn as a container with a red dashed border.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug",
+          "description": "Identifier of the group. Must be unique among all sites, external groups, devices, links and tunnels."
+        },
+        "name": {
+          "description": "Display name. Defaults to the id.",
+          "type": "string"
+        },
+        "locked": {
+          "description": "Marks the group as given and not to be changed. It is shown with a lock badge, and compared with `locked_baseline` when a baseline exists for its id.",
+          "type": "boolean",
+          "default": false
+        },
+        "notes": {
+          "description": "Free text shown next to the group in the plan.",
+          "type": "string"
+        },
+        "devices": {
+          "description": "Devices that belong to the group.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/device" }
+        }
+      },
+      "examples": [
+        {
+          "id": "isp",
+          "name": "ISP",
+          "locked": true,
+          "devices": [{ "id": "isp-r1", "type": "router", "interfaces": [{ "name": "f0/1", "address": "203.12.20.17/28" }] }]
+        }
+      ]
+    },
+    "site": {
+      "title": "Site",
+      "description": "One site: an address block, its VLANs and its devices.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "supernet"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug",
+          "description": "Identifier of the site. Must be unique among all sites, external groups, devices, links and tunnels."
+        },
+        "name": {
+          "description": "Display name. Defaults to the id.",
+          "type": "string"
+        },
+        "supernet": {
+          "$ref": "#/$defs/cidr",
+          "description": "Address block that every VLAN subnet of the site must fit inside. VLANs without a `subnet` are auto-allocated from it."
+        },
+        "color": {
+          "description": "Colour of the site's header band in the plan and of its container in the topology, as a six-digit hex colour.",
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "examples": ["#16a34a"]
+        },
+        "wan": {
+          "$ref": "#/$defs/wan",
+          "description": "The site's connection to the outside world."
+        },
+        "vlans": {
+          "description": "VLANs of the site. VLAN ids must be unique within the site.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/vlan" }
+        },
+        "devices": {
+          "description": "Devices located at the site.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/device" }
+        },
+        "locked": {
+          "description": "Marks the site as given and not to be changed. It is shown with a lock badge, and compared with `locked_baseline` when a baseline exists for its id.",
+          "type": "boolean",
+          "default": false
+        },
+        "notes": {
+          "description": "Free text shown under the site heading in the plan.",
+          "type": "string"
+        }
+      }
+    },
+    "wan": {
+      "title": "Wan",
+      "description": "A site's uplink: which interface faces the provider, its address and the next hop.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "interface"],
+      "properties": {
+        "device": {
+          "$ref": "#/$defs/slug",
+          "description": "Id of the device that holds the WAN interface. Must be a device of this site."
+        },
+        "interface": {
+          "description": "Name of the WAN interface on that device. The interface must be listed under the device's `interfaces`.",
+          "type": "string",
+          "pattern": "^\\S+$",
+          "examples": ["f0/0"]
+        },
+        "address": {
+          "$ref": "#/$defs/cidr",
+          "description": "Address and prefix of the WAN interface. May be given on the interface itself instead; if both are given they must be equal.",
+          "examples": ["203.12.20.30/28"]
+        },
+        "gateway": {
+          "$ref": "#/$defs/ipv4",
+          "description": "Next-hop address of the provider. Must be inside the WAN subnet. If another device has an interface with this address, the topology draws the WAN connection to it.",
+          "examples": ["203.12.20.17"]
+        },
+        "nat": {
+          "description": "Whether the site's private addresses are translated (NAT/PAT) on this interface.",
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "vlan": {
+      "title": "Vlan",
+      "description": "A VLAN and its subnet. Give either `hosts` (the subnet is then auto-allocated inside the site supernet) or an explicit `subnet`, or both.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "description": "VLAN id, 1–4094. Ids 1002–1005 are reserved on Cisco equipment and are rejected. Must be unique within the site.",
+          "type": "integer",
+          "examples": [10]
+        },
+        "name": {
+          "description": "Name of the VLAN.",
+          "type": "string",
+          "examples": ["Marknad"]
+        },
+        "hosts": {
+          "description": "Number of host addresses needed, including the gateway. Decides the size of an auto-allocated subnet and is checked against the size of an explicit one.",
+          "type": "integer",
+          "minimum": 1,
+          "examples": [40]
+        },
+        "growth_percent": {
+          "description": "Extra headroom added to `hosts` when sizing an auto-allocated subnet, in percent (rounded up to whole hosts).",
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "examples": [25]
+        },
+        "subnet": {
+          "$ref": "#/$defs/cidr",
+          "description": "Subnet of the VLAN. Must be a network address inside the site supernet. If omitted, the smallest subnet that fits `hosts` is auto-allocated (largest VLANs first, then by VLAN id)."
+        },
+        "gateway": {
+          "$ref": "#/$defs/address",
+          "description": "Default gateway of the VLAN. Defaults to the first usable address of the subnet."
+        },
+        "dhcp": {
+          "$ref": "#/$defs/dhcp",
+          "description": "How hosts in the VLAN get their addresses. Omit for VLANs that are addressed statically only."
+        },
+        "native": {
+          "description": "Whether this VLAN is the native (untagged) VLAN on trunks.",
+          "type": "boolean",
+          "default": false
+        },
+        "static": {
+          "description": "Addresses in the VLAN that are assigned by hand, such as servers, printers and switch management addresses.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/staticEntry" }
+        },
+        "notes": {
+          "description": "Free text shown in the Notes column of the VLAN table.",
+          "type": "string"
+        },
+        "locked": {
+          "description": "Marks the VLAN as given and not to be changed. Its baseline key in `locked_baseline` is `<site-id>:<vlan-id>`.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "examples": [{ "id": 10, "name": "Marknad", "hosts": 40, "dhcp": { "mode": "server", "on": "linky-r1" } }]
+    },
+    "dhcp": {
+      "title": "Dhcp",
+      "description": "DHCP settings of a VLAN.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "description": "Where DHCP leases for the VLAN come from.",
+          "enum": ["server", "relay", "none"],
+          "x-enumDescriptions": {
+            "server": "A device of the site runs the DHCP pool itself; name it with `on`.",
+            "relay": "The gateway forwards DHCP requests to the server given in `server` (ip helper-address).",
+            "none": "No DHCP in this VLAN; all hosts are static."
+          }
+        },
+        "on": {
+          "$ref": "#/$defs/slug",
+          "description": "Id of the device that runs the DHCP pool. Used with `mode: server`."
+        },
+        "server": {
+          "$ref": "#/$defs/ipv4",
+          "description": "Address of the DHCP server that requests are relayed to. Used with `mode: relay`. A warning is shown if it is not inside any subnet of the same site."
+        },
+        "pool": {
+          "$ref": "#/$defs/pool",
+          "description": "Range of addresses handed out. Defaults to the address after the gateway up to the last usable address."
+        },
+        "exclude": {
+          "description": "Addresses or ranges inside the pool that must not be handed out. Each entry is a single address or `first-last`.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(\\d{1,3}\\.){3}\\d{1,3}(\\s*-\\s*(\\d{1,3}\\.){3}\\d{1,3})?$",
+            "examples": ["10.10.1.2-10.10.1.19"]
+          },
+          "examples": [["10.10.1.2-10.10.1.19", "10.10.1.50"]]
+        }
+      }
+    },
+    "pool": {
+      "title": "Pool",
+      "description": "An inclusive range of addresses handed out by DHCP.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": {
+          "$ref": "#/$defs/ipv4",
+          "description": "First address of the pool."
+        },
+        "end": {
+          "$ref": "#/$defs/ipv4",
+          "description": "Last address of the pool."
+        }
+      }
+    },
+    "staticEntry": {
+      "title": "StaticEntry",
+      "description": "One hand-assigned address in a VLAN.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "ip"],
+      "properties": {
+        "name": {
+          "description": "What the address belongs to. If it equals the id or name of a device that has the same address on an interface, the two are treated as the same assignment rather than a duplicate.",
+          "type": "string",
+          "examples": ["dhcp01"]
+        },
+        "ip": {
+          "$ref": "#/$defs/ipv4",
+          "description": "The assigned address. Must be a host address inside the VLAN subnet and outside the DHCP pool."
+        },
+        "role": {
+          "description": "Free text describing what the host does.",
+          "type": "string",
+          "examples": ["DHCP server"]
+        }
+      }
+    },
+    "device": {
+      "title": "Device",
+      "description": "A network device or host. Routers and hosts list `interfaces`; switches list `ports` (and may also have interfaces, for example a management SVI).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug",
+          "description": "Identifier of the device. Must be unique among all sites, external groups, devices, links and tunnels. Used in references such as `linky-r1:f0/0`."
+        },
+        "name": {
+          "description": "Display name (for example the hostname). Defaults to the id.",
+          "type": "string"
+        },
+        "type": {
+          "description": "Kind of device. Decides the default icon in the topology.",
+          "enum": ["router", "switch", "l3switch", "firewall", "ap", "server", "pc", "cloud", "isp"],
+          "x-enumDescriptions": {
+            "router": "Router.",
+            "switch": "Layer 2 switch.",
+            "l3switch": "Multilayer (layer 3) switch.",
+            "firewall": "Firewall.",
+            "ap": "Wireless access point.",
+            "server": "Server.",
+            "pc": "Workstation or other end host.",
+            "cloud": "A cloud node standing for a network you do not model in detail, such as the internet. Other interfaces can link to it by its id.",
+            "isp": "A provider node, when the ISP is drawn as a single box rather than a router."
+          }
+        },
+        "icon": {
+          "description": "Icon used in the topology. A built-in icon name (`router`), a path relative to the site root (`icons/custom/fw.svg`), or an absolute `https://` URL (passed through as-is; may not print). Defaults to the device type.",
+          "type": "string",
+          "examples": ["l3switch", "icons/custom/fw.svg"]
+        },
+        "interfaces": {
+          "description": "Routed interfaces of the device. Interface names must be unique within the device.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/interface" }
+        },
+        "ports": {
+          "description": "Switch ports of the device, given as ranges that share the same configuration.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/port" }
+        },
+        "locked": {
+          "description": "Marks the device as given and not to be changed. It is shown with a lock badge, and compared with `locked_baseline` when a baseline exists for its id.",
+          "type": "boolean",
+          "default": false
+        },
+        "notes": {
+          "description": "Free text about the device.",
+          "type": "string"
+        }
+      }
+    },
+    "interface": {
+      "title": "Interface",
+      "description": "A routed interface. Its address may be written here, or come from the site `wan`, from a `links` entry that names it as an endpoint, or from its sub-interfaces.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "description": "Interface name as used on the device, without spaces.",
+          "type": "string",
+          "pattern": "^\\S+$",
+          "examples": ["f0/0", "g0/0/1", "vlan99"]
+        },
+        "address": {
+          "$ref": "#/$defs/cidr",
+          "description": "Address and prefix of the interface. Omit it for interfaces whose address comes from the site `wan` or from a link."
+        },
+        "role": {
+          "description": "What the interface is used for. Shown in the interface table.",
+          "enum": ["wan", "lan", "trunk", "p2p", "mgmt", "loopback"],
+          "x-enumDescriptions": {
+            "wan": "Faces the provider. A valid underlay for tunnels.",
+            "lan": "Routed interface in a single LAN or VLAN.",
+            "trunk": "Carries several VLANs, normally with sub-interfaces (router-on-a-stick).",
+            "p2p": "End of a point-to-point link.",
+            "mgmt": "Management interface, such as a switch SVI.",
+            "loopback": "Loopback interface."
+          }
+        },
+        "vlan": {
+          "description": "VLAN id (of the device's site) that this interface sits in, for example a switch SVI or a server NIC. The address must then be inside that VLAN's subnet.",
+          "type": "integer"
+        },
+        "link": {
+          "$ref": "#/$defs/linkTarget",
+          "description": "What the interface is cabled to. Draws a connection in the topology."
+        },
+        "subinterfaces": {
+          "description": "802.1Q sub-interfaces. `auto` creates one `<name>.<vlan>` sub-interface per VLAN of the site, each with the VLAN's gateway address. A list creates only the ones named.",
+          "oneOf": [
+            {
+              "const": "auto",
+              "description": "One sub-interface per VLAN of the site, addressed with the VLAN gateway."
+            },
+            {
+              "type": "array",
+              "description": "Explicit list of sub-interfaces.",
+              "items": { "$ref": "#/$defs/subinterface" }
+            }
+          ],
+          "examples": ["auto"]
+        },
+        "description": {
+          "description": "Free text shown in the interface table.",
+          "type": "string"
+        }
+      }
+    },
+    "subinterface": {
+      "title": "Subinterface",
+      "description": "One 802.1Q sub-interface, named `<interface>.<vlan>`.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vlan"],
+      "properties": {
+        "vlan": {
+          "description": "VLAN id (of the device's site) carried by the sub-interface.",
+          "type": "integer"
+        },
+        "address": {
+          "$ref": "#/$defs/cidr",
+          "description": "Address of the sub-interface. Defaults to the VLAN's gateway."
+        }
+      }
+    },
+    "port": {
+      "title": "Port",
+      "description": "One switch port or a range of ports with the same configuration.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["range", "mode"],
+      "properties": {
+        "range": {
+          "description": "A single port (`g0/1`) or a range over the last number (`f0/1-10`).",
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z-]*\\d+(/\\d+)*(-\\d+)?$",
+          "examples": ["g0/1", "f0/1-10"]
+        },
+        "mode": {
+          "description": "Switchport mode.",
+          "enum": ["access", "trunk"],
+          "x-enumDescriptions": {
+            "access": "Untagged port in one VLAN, given by `vlan`.",
+            "trunk": "Tagged port carrying the VLANs in `allowed` (all VLANs of the site if omitted)."
+          }
+        },
+        "vlan": {
+          "description": "Access VLAN id. Used with `mode: access`.",
+          "type": "integer"
+        },
+        "allowed": {
+          "description": "VLAN ids allowed on the trunk. Used with `mode: trunk`. Defaults to all VLANs of the site.",
+          "type": "array",
+          "items": { "type": "integer" },
+          "examples": [[10, 20, 99]]
+        },
+        "link": {
+          "$ref": "#/$defs/linkTarget",
+          "description": "What the port is cabled to. Only meaningful for a single port, not a range. Draws a connection in the topology."
+        },
+        "description": {
+          "description": "Free text shown in the switchport table.",
+          "type": "string"
+        }
+      }
+    },
+    "linkTarget": {
+      "title": "LinkTarget",
+      "description": "A reference to the other end of a cable: `device-id:interface-name` (an interface or switch port of that device), or just `device-id` for nodes without interfaces such as a cloud.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*(:\\S+)?$",
+      "examples": ["linky-r1:f0/1", "internet"]
+    },
+    "link": {
+      "title": "Link",
+      "description": "A point-to-point link between two interfaces with its own small subnet.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "a", "b"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug",
+          "description": "Identifier of the link. Must be unique among all sites, external groups, devices, links and tunnels."
+        },
+        "name": {
+          "description": "Display name. Defaults to the id.",
+          "type": "string",
+          "examples": ["Nedgrävd kabel"]
+        },
+        "subnet": {
+          "$ref": "#/$defs/cidr",
+          "description": "Subnet of the link. If omitted, it is auto-allocated from the top-level `transit_pool`.",
+          "examples": ["10.255.0.0/30"]
+        },
+        "p2p": {
+          "description": "Allow a /31 subnet (RFC 3021), which has two usable addresses and no network or broadcast address. Without it a /31 is rejected.",
+          "type": "boolean",
+          "default": false
+        },
+        "a": {
+          "$ref": "#/$defs/linkEnd",
+          "description": "First end of the link. Gets the first usable address unless `address` is given."
+        },
+        "b": {
+          "$ref": "#/$defs/linkEnd",
+          "description": "Second end of the link. Gets the second usable address unless `address` is given."
+        },
+        "locked": {
+          "description": "Marks the link as given and not to be changed. It is shown with a lock badge, and compared with `locked_baseline` when a baseline exists for its id.",
+          "type": "boolean",
+          "default": false
+        },
+        "notes": {
+          "description": "Free text about the link.",
+          "type": "string"
+        }
+      }
+    },
+    "linkEnd": {
+      "title": "LinkEnd",
+      "description": "One end of a point-to-point link.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpoint"],
+      "properties": {
+        "endpoint": {
+          "description": "The interface at this end, as `device-id:interface-name`. The interface must be listed under the device's `interfaces`.",
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*:\\S+$",
+          "examples": ["silvercrest-r1:f0/0"]
+        },
+        "address": {
+          "$ref": "#/$defs/address",
+          "description": "Address of this end. Defaults to the first (side a) or second (side b) usable address of the link subnet."
+        }
+      }
+    },
+    "tunnel": {
+      "title": "Tunnel",
+      "description": "A VPN tunnel between two devices. Never put keys in the file: `crypto.psk_ref` is a free-text pointer to where the key comes from.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "a", "b"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug",
+          "description": "Identifier of the tunnel. Must be unique among all sites, external groups, devices, links and tunnels."
+        },
+        "name": {
+          "description": "Display name. Defaults to the id.",
+          "type": "string",
+          "examples": ["VPN Linky – Bluestar"]
+        },
+        "type": {
+          "description": "Tunnel technology. Decides whether the tunnel has its own subnet.",
+          "enum": ["ipsec-policy", "ipsec-vti", "gre", "gre-ipsec", "wireguard"],
+          "x-enumDescriptions": {
+            "ipsec-policy": "Policy-based IPsec (crypto map). No tunnel interface, so `subnet` is not allowed; traffic is selected by the `protected` networks.",
+            "ipsec-vti": "Route-based IPsec with a virtual tunnel interface. Requires `subnet`.",
+            "gre": "Plain GRE without encryption. Requires `subnet`.",
+            "gre-ipsec": "GRE protected by IPsec. Requires `subnet`.",
+            "wireguard": "WireGuard. Requires `subnet`."
+          }
+        },
+        "a": {
+          "$ref": "#/$defs/tunnelEnd",
+          "description": "First end of the tunnel. Gets the first usable address of `subnet` unless `address` is given."
+        },
+        "b": {
+          "$ref": "#/$defs/tunnelEnd",
+          "description": "Second end of the tunnel. Gets the second usable address of `subnet` unless `address` is given."
+        },
+        "subnet": {
+          "$ref": "#/$defs/cidr",
+          "description": "Subnet of the tunnel interfaces. Required for every type except `ipsec-policy`, where it is forbidden. Must not overlap any other subnet in the file.",
+          "examples": ["10.255.255.0/30"]
+        },
+        "p2p": {
+          "description": "Allow a /31 tunnel subnet (RFC 3021).",
+          "type": "boolean",
+          "default": false
+        },
+        "protected": {
+          "$ref": "#/$defs/protectedNetworks",
+          "description": "Networks behind each end that are reachable through the tunnel. Defaults to `auto` on both sides."
+        },
+        "routing": {
+          "description": "How routes to the protected networks are learned.",
+          "enum": ["static", "ospf", "eigrp", "bgp"],
+          "x-enumDescriptions": {
+            "static": "Static routes pointing at the tunnel.",
+            "ospf": "OSPF runs over the tunnel.",
+            "eigrp": "EIGRP runs over the tunnel.",
+            "bgp": "BGP runs over the tunnel."
+          },
+          "default": "static"
+        },
+        "crypto": {
+          "$ref": "#/$defs/crypto",
+          "description": "Encryption parameters. Not used by plain `gre`."
+        },
+        "locked": {
+          "description": "Marks the tunnel as given and not to be changed. It is shown with a lock badge, and compared with `locked_baseline` when a baseline exists for its id.",
+          "type": "boolean",
+          "default": false
+        },
+        "notes": {
+          "description": "Free text about the tunnel.",
+          "type": "string"
+        }
+      }
+    },
+    "tunnelEnd": {
+      "title": "TunnelEnd",
+      "description": "One end of a tunnel.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device", "underlay"],
+      "properties": {
+        "device": {
+          "$ref": "#/$defs/slug",
+          "description": "Id of the device that terminates the tunnel."
+        },
+        "underlay": {
+          "description": "Name of the interface on that device the tunnel is sourced from. Its address is the peer address the other side connects to, so it needs an address and should be a WAN or link interface.",
+          "type": "string",
+          "pattern": "^\\S+$",
+          "examples": ["f0/0"]
+        },
+        "address": {
+          "$ref": "#/$defs/address",
+          "description": "Address of the tunnel interface at this end. Defaults to the first (side a) or second (side b) usable address of the tunnel subnet."
+        }
+      }
+    },
+    "protectedNetworks": {
+      "title": "ProtectedNetworks",
+      "description": "The networks behind each end of a tunnel. The two sides must not overlap.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "a": {
+          "$ref": "#/$defs/protectedSide",
+          "description": "Networks behind side a."
+        },
+        "b": {
+          "$ref": "#/$defs/protectedSide",
+          "description": "Networks behind side b."
+        }
+      }
+    },
+    "protectedSide": {
+      "title": "ProtectedSide",
+      "description": "Either `auto` or an explicit list of networks.",
+      "oneOf": [
+        {
+          "const": "auto",
+          "description": "All VLAN subnets of the site the tunnel device belongs to."
+        },
+        {
+          "type": "array",
+          "description": "Explicit list of networks in CIDR notation.",
+          "items": { "$ref": "#/$defs/cidr" }
+        }
+      ],
+      "default": "auto",
+      "examples": ["auto", ["10.10.1.0/26"]]
+    },
+    "crypto": {
+      "title": "Crypto",
+      "description": "Encryption parameters of a tunnel. Documentation only; nothing is generated from them. Secrets do not belong here.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ike": {
+          "description": "IKE version.",
+          "enum": [1, 2],
+          "x-enumDescriptions": {
+            "1": "IKEv1 (ISAKMP).",
+            "2": "IKEv2."
+          }
+        },
+        "encryption": {
+          "description": "Encryption algorithm, as free text.",
+          "type": "string",
+          "examples": ["aes-256", "aes-256-gcm", "chacha20-poly1305"]
+        },
+        "integrity": {
+          "description": "Integrity (hash) algorithm, as free text.",
+          "type": "string",
+          "examples": ["sha256", "sha384"]
+        },
+        "dh_group": {
+          "description": "Diffie-Hellman group number.",
+          "type": "integer",
+          "minimum": 1,
+          "examples": [14]
+        },
+        "lifetime_s": {
+          "description": "Lifetime of the security association in seconds.",
+          "type": "integer",
+          "minimum": 1,
+          "examples": [86400]
+        },
+        "psk_ref": {
+          "description": "Where the pre-shared key comes from, as free text. Never the key itself.",
+          "type": "string",
+          "examples": ["given by teacher"]
+        }
+      }
+    }
+  }
+}

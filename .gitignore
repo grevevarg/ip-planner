@@ -3,3 +3,14 @@ dist/
 *.local
 .vite/
 coverage/
+
+# Internal working notes between the maintainer and coding agents; not part of the project.
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+ISSUES.md
+TODO.md
+NOTES.md
+PLAN.md
+SPEC.md
+.claude/

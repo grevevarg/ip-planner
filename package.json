@@ -13,7 +13,7 @@
     "lint": "eslint .",
     "gen:types": "tsx scripts/gen-types.ts",
     "gen:docs": "tsx scripts/gen-schema-docs.ts",
-    "check:schema": "tsx scripts/gen-schema-docs.ts --check"
+    "check:schema": "tsx scripts/gen-schema-docs.ts --check && tsx scripts/gen-types.ts --check"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.4",

@@ -1,0 +1,29 @@
+# Minimal example: one site, two VLANs, everything auto-allocated.
+# Illustrative values only.
+
+version: 1
+meta:
+  title: Minimal plan
+  date: 2026-11-16
+
+sites:
+  # Illustrative: an invented office.
+  - id: office
+    name: Office
+    supernet: 192.168.10.0/24
+    vlans:
+      - { id: 10, name: Staff, hosts: 50, dhcp: { mode: server, on: office-r1 } }
+      - { id: 20, name: Guests, hosts: 20, dhcp: { mode: server, on: office-r1 } }
+    devices:
+      - id: office-r1
+        name: R1
+        type: router
+        interfaces:
+          - { name: g0/0, role: trunk, subinterfaces: auto }
+      - id: office-sw1
+        name: SW1
+        type: switch
+        ports:
+          - { range: "g0/1", mode: trunk, link: office-r1:g0/0 }
+          - { range: "f0/1-12", mode: access, vlan: 10 }
+          - { range: "f0/13-24", mode: access, vlan: 20 }

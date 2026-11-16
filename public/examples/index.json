@@ -1,0 +1,12 @@
+[
+  {
+    "file": "three-companies.yaml",
+    "title": "Three companies, one ISP",
+    "description": "Three sites with VLANs, a buried point-to-point cable and an IPsec tunnel. Illustrative values only."
+  },
+  {
+    "file": "minimal.yaml",
+    "title": "Minimal: one site, two VLANs",
+    "description": "The smallest useful plan. Both subnets are auto-allocated."
+  }
+]
