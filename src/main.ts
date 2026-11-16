@@ -1,36 +1,255 @@
+/**
+ * App shell: toolbar, resizable split between the editor and the output tabs,
+ * and the loop that turns every edit into diagnostics and a fresh plan.
+ */
+import '@fontsource/ibm-plex-sans/latin-400.css';
+import '@fontsource/ibm-plex-sans/latin-500.css';
+import '@fontsource/ibm-plex-sans/latin-600.css';
+import '@fontsource/ibm-plex-sans/latin-ext-400.css';
+import '@fontsource/ibm-plex-sans/latin-ext-500.css';
+import '@fontsource/ibm-plex-sans/latin-ext-600.css';
+import '@fontsource/ibm-plex-sans-condensed/latin-400.css';
+import '@fontsource/ibm-plex-sans-condensed/latin-600.css';
+import '@fontsource/ibm-plex-sans-condensed/latin-ext-400.css';
+import '@fontsource/ibm-plex-sans-condensed/latin-ext-600.css';
+import '@fontsource/ibm-plex-mono/latin-400.css';
+import '@fontsource/ibm-plex-mono/latin-500.css';
+import '@fontsource/ibm-plex-mono/latin-ext-400.css';
+import './styles.css';
+import './print.css';
+
+import { $, debounce } from './app/dom';
+import { downloadText, fileStem, pickTextFile } from './app/files';
+import { store } from './app/persist';
+import { badge, renderProblems } from './app/problems';
+import { setupSplitter } from './app/splitter';
 import { createEditor } from './editor/editor';
-import { analyze } from './model/validate';
+import type { Diagnostic } from './model/diagnostics';
+import { analyze, type Analysis } from './model/validate';
+import { footerText, renderPlan } from './render/plan';
 
-const app = document.querySelector<HTMLDivElement>('#app')!;
+const STARTER = `version: 1
+meta:
+  title: My network plan
+
+sites:
+  - id: office
+    name: Office
+    supernet: 192.168.10.0/24
+    vlans:
+      - { id: 10, name: Staff, hosts: 50 }
+`;
+
+type TabId = 'plan' | 'problems';
+const TABS: { id: TabId; label: string }[] = [
+  { id: 'plan', label: 'Plan' },
+  { id: 'problems', label: 'Problems' },
+];
+
+const app = $<HTMLDivElement>('#app');
 app.innerHTML = `
-  <style>
-    :root { --ink:#1b2430; --ink-soft:#4a5565; --ink-faint:#7a8494; --editor-bg:#fff; --editor-active:#f1f4f8; --selection:#cfe0fb;
-      --accent:#0f4fb4; --on-accent:#fff; --surface:#fff; --rule-strong:#c5ccd6; --shadow-pop:0 4px 16px #0003;
-      --font-mono:ui-monospace,monospace; --font-ui:system-ui,sans-serif;
-      --syn-key:#0f4fb4; --syn-string:#1b2430; --syn-number:#9a3412; --syn-comment:#7a8494; --syn-punct:#7a8494; }
-    body { margin:0; font-family:var(--font-ui); }
-  </style>
-  <div style="display:flex;height:100vh">
-    <div id="editor" style="flex:1;min-width:0;overflow:hidden;border-right:1px solid #8884"></div>
-    <pre id="out" style="flex:1;overflow:auto;margin:0;padding:12px;white-space:pre-wrap"></pre>
-  </div>`;
-const out = app.querySelector<HTMLPreElement>('#out')!;
+  <header class="toolbar">
+    <span class="brand">net<span class="brand-mask">/</span>plan</span>
+    <div class="toolbar-group">
+      <button type="button" class="btn" data-action="new">New</button>
+      <button type="button" class="btn" data-action="open">Open .yaml</button>
+      <button type="button" class="btn" data-action="save">Save .yaml</button>
+    </div>
+    <span class="toolbar-spacer"></span>
+    <span class="toast" role="status" aria-live="polite"></span>
+    <button type="button" class="btn btn-primary" data-action="export">Export PDF</button>
+  </header>
+  <main class="workspace">
+    <section class="pane-editor" aria-label="YAML editor">
+      <div class="editor-host"></div>
+      <details class="drawer">
+        <summary>Problems <span class="count" data-badge></span> <span data-badge-label></span></summary>
+        <div class="drawer-list" data-problems></div>
+      </details>
+    </section>
+    <div class="splitter" role="separator" aria-orientation="vertical" aria-label="Resize editor" aria-valuemin="20" aria-valuemax="80" tabindex="0"></div>
+    <section class="pane-output" aria-label="Output">
+      <div class="tabs" role="tablist">
+        ${TABS.map((tab) => `<button type="button" class="tab" role="tab" id="tab-${tab.id}" aria-controls="panel-${tab.id}" data-tab="${tab.id}">${tab.label}${tab.id === 'problems' ? ' <span class="count" data-badge></span>' : ''}</button>`).join('')}
+      </div>
+      <p class="stale-note" hidden></p>
+      <div class="panel panel-plan" role="tabpanel" id="panel-plan" aria-labelledby="tab-plan">
+        <article class="sheet"><p class="plan-empty">Nothing to show yet. Write a plan on the left, or open a .yaml file.</p></article>
+      </div>
+      <div class="panel panel-problems" role="tabpanel" id="panel-problems" aria-labelledby="tab-problems" hidden>
+        <div data-problems></div>
+      </div>
+    </section>
+  </main>
+  <div class="print-footer" aria-hidden="true"></div>`;
 
-const initial = 'version: 1\nmeta:\n  title: hello world\n';
-let timer: number | undefined;
-const editor = createEditor(app.querySelector<HTMLDivElement>('#editor')!, {
-  text: initial,
-  onChange: (text) => {
-    window.clearTimeout(timer);
-    timer = window.setTimeout(() => update(text), 150);
-  },
-});
+const workspace = $<HTMLElement>('.workspace');
+const output = $<HTMLElement>('.pane-output');
+const sheet = $<HTMLElement>('.sheet');
+const staleNote = $<HTMLParagraphElement>('.stale-note');
+const toastEl = $<HTMLSpanElement>('.toast');
+const printFooter = $<HTMLDivElement>('.print-footer');
+
+// ── State ──────────────────────────────────────────────────────────────────
+
+/** The latest analysis of the editor text. */
+let current: Analysis | null = null;
+/** The latest analysis without errors; this is what the views show. */
+let lastGood: Analysis | null = null;
+let fileName: string | undefined;
+/** Columns the user has switched off, per table. Kept in localStorage and honoured in print. */
+const hiddenColumns = store.loadColumns();
+
+function toast(message: string, kind: 'info' | 'warning' = 'info'): void {
+  toastEl.textContent = message;
+  toastEl.classList.toggle('is-warning', kind === 'warning');
+  window.clearTimeout(toast.timer);
+  toast.timer = window.setTimeout(() => (toastEl.textContent = ''), kind === 'warning' ? 9000 : 4000);
+}
+toast.timer = 0 as number | undefined;
+
+// ── Tabs ───────────────────────────────────────────────────────────────────
+
+function selectTab(id: TabId): void {
+  for (const tab of TABS) {
+    $<HTMLButtonElement>(`#tab-${tab.id}`).setAttribute('aria-selected', String(tab.id === id));
+    $<HTMLElement>(`#panel-${tab.id}`).hidden = tab.id !== id;
+  }
+}
+for (const tab of TABS) $<HTMLButtonElement>(`#tab-${tab.id}`).addEventListener('click', () => selectTab(tab.id));
+selectTab('plan');
+
+// ── Editor and the analyse → render loop ───────────────────────────────────
+
+const editor = createEditor($<HTMLDivElement>('.editor-host'), { text: STARTER, onChange: debounce(update, 150) });
+
+function showProblems(diagnostics: Diagnostic[]): void {
+  const info = badge(diagnostics);
+  document.querySelectorAll<HTMLElement>('[data-badge]').forEach((el) => {
+    el.textContent = info.text;
+    el.className = info.className;
+    el.title = info.label;
+  });
+  $<HTMLElement>('[data-badge-label]').textContent = info.label;
+  document.querySelectorAll<HTMLElement>('[data-problems]').forEach((container) => {
+    renderProblems(container, diagnostics, (d) => editor.reveal(d.from, d.to));
+  });
+}
+
+/** A real running footer where the browser supports page-margin boxes; otherwise the fixed element is used. */
+const marginBoxes = 'CSSMarginRule' in window;
+document.documentElement.classList.toggle('has-margin-boxes', marginBoxes);
+const footerStyle = document.createElement('style');
+document.head.append(footerStyle);
+
+function setFooter(text: string): void {
+  printFooter.textContent = text;
+  const quoted = JSON.stringify(text);
+  const font = `font: 8pt 'IBM Plex Sans', sans-serif; color: #667180;`;
+  footerStyle.textContent = marginBoxes
+    ? `@page { @bottom-left { content: ${quoted}; ${font} } @bottom-right { content: "Page " counter(page) " of " counter(pages); ${font} } }`
+    : '';
+}
+
+function renderViews(): void {
+  if (!lastGood?.model) return;
+  sheet.innerHTML = renderPlan(lastGood.model, lastGood.diagnostics, { hidden: hiddenColumns });
+  setFooter(footerText(lastGood.model));
+  document.title = `${lastGood.model.meta.title ?? 'Untitled plan'} – netplan`;
+}
 
 function update(text: string): void {
-  const analysis = analyze(text);
-  editor.showDiagnostics(analysis.diagnostics);
-  out.textContent = analysis.diagnostics.length
-    ? analysis.diagnostics.map((d) => `${d.severity} ${d.code} line ${d.line}: ${d.message}`).join('\n')
-    : 'No problems.';
+  current = analyze(text);
+  editor.showDiagnostics(current.diagnostics);
+  showProblems(current.diagnostics);
+
+  if (!current.hasErrors && current.model) {
+    lastGood = current;
+    renderViews();
+  }
+  // With errors the last good render stays up, dimmed, until the file is fixed.
+  const errors = current.diagnostics.filter((d) => d.severity === 'error').length;
+  output.classList.toggle('is-stale', current.hasErrors && lastGood !== null);
+  staleNote.hidden = !current.hasErrors;
+  if (current.hasErrors) {
+    const count = `${errors} ${errors === 1 ? 'error' : 'errors'}`;
+    staleNote.textContent = lastGood
+      ? `Showing the last version without errors. Fix ${count} in the YAML to update it.`
+      : `Fix ${count} in the YAML to see the plan.`;
+  }
 }
-update(initial);
+
+// ── Column visibility ──────────────────────────────────────────────────────
+
+sheet.addEventListener('change', (event) => {
+  const box = event.target as HTMLInputElement;
+  const { table, column } = box.dataset;
+  if (!table || !column) return;
+  const hidden = new Set(hiddenColumns[table] ?? []);
+  if (box.checked) hidden.delete(column);
+  else hidden.add(column);
+  hiddenColumns[table] = [...hidden];
+  store.saveColumns(hiddenColumns);
+
+  // Re-render, then reopen the menu the user is working in.
+  const menus = [...sheet.querySelectorAll('.column-menu')];
+  const index = menus.indexOf(box.closest('.column-menu')!);
+  renderViews();
+  const reopened = sheet.querySelectorAll<HTMLDetailsElement>('.column-menu')[index];
+  if (reopened) {
+    reopened.open = true;
+    reopened.querySelector<HTMLInputElement>(`input[data-column="${column}"]`)?.focus();
+  }
+});
+
+// Clicking anywhere else closes open column menus and toolbar menus.
+document.addEventListener('click', (event) => {
+  document.querySelectorAll<HTMLDetailsElement>('details.column-menu[open], details.menu[open]').forEach((menu) => {
+    if (!menu.contains(event.target as Node)) menu.open = false;
+  });
+});
+
+// ── Toolbar actions ────────────────────────────────────────────────────────
+
+function loadText(text: string, name?: string): void {
+  fileName = name;
+  editor.setText(text);
+  update(text);
+}
+
+const actions: Record<string, () => void | Promise<void>> = {
+  new() {
+    if (editor.getText().trim() !== STARTER.trim() && !window.confirm('Start a new plan? The current text will be discarded.')) return;
+    loadText(STARTER);
+    toast('Started a new plan');
+  },
+  async open() {
+    const file = await pickTextFile('.yaml,.yml,text/yaml,text/plain');
+    if (!file) return;
+    loadText(file.text, file.name);
+    toast(`Opened ${file.name}`);
+  },
+  save() {
+    const name = fileName ?? `${fileStem(current?.model?.meta.title ?? lastGood?.model?.meta.title)}.yaml`;
+    downloadText(name, editor.getText(), 'text/yaml');
+    toast(`Saved ${name}`);
+  },
+  async export() {
+    if (!lastGood) {
+      toast('Nothing to export yet: the YAML has errors.', 'warning');
+      return;
+    }
+    if (current?.hasErrors) toast('The YAML has errors, so the PDF shows the last version without them.', 'warning');
+    selectTab('plan');
+    await document.fonts.ready;
+    window.print();
+  },
+};
+
+document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach((button) => {
+  button.addEventListener('click', () => void actions[button.dataset.action!]());
+});
+
+setupSplitter($<HTMLElement>('.splitter'), workspace, store.loadSplit(), store.saveSplit);
+
+update(editor.getText());

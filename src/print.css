@@ -1,0 +1,168 @@
+/*
+ * Print / "Export PDF". The printed document is the Plan panel and nothing
+ * else: every piece of app chrome is hidden and the panel is un-clipped so the
+ * browser can paginate it. Print is always light, whatever the screen theme.
+ */
+
+@page {
+  size: A4 landscape;
+  margin: 12mm 12mm 15mm;
+}
+
+@media print {
+  :root {
+    color-scheme: light;
+    --desk: #ffffff;
+    --chrome: #ffffff;
+    --surface: #ffffff;
+    --ink: #111820;
+    --ink-soft: #3f4b5a;
+    --ink-faint: #667180;
+    --rule: #d5dbe3;
+    --rule-strong: #aab3bf;
+    --accent: #0f4fb4;
+    --accent-soft: #e4edfb;
+    --auto-bg: #fbeecb;
+    --auto-ink: #7a4e00;
+    --lock: #b42318;
+    --lock-bg: #fde7e4;
+    --warning: #9a5b00;
+    --ok: #17713d;
+  }
+
+  html,
+  body,
+  #app,
+  .workspace,
+  .pane-output,
+  .panel-plan {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+  }
+
+  body {
+    font-size: 10pt;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  /* App chrome */
+  .toolbar,
+  .pane-editor,
+  .splitter,
+  .tabs,
+  .stale-note,
+  .panel:not(.panel-plan),
+  .column-menu {
+    display: none !important;
+  }
+
+  .panel-plan {
+    padding: 0 !important;
+  }
+
+  .sheet {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    box-shadow: none;
+    opacity: 1 !important;
+  }
+
+  .plan-cover h1 {
+    font-size: 22pt;
+  }
+
+  .plan-section {
+    margin-top: 0;
+  }
+
+  .plan-section table {
+    font-size: 8.5pt;
+  }
+
+  .plan-section td.addr,
+  .plan-section td .mono {
+    font-size: 7.6pt;
+  }
+
+  .table-scroll {
+    overflow: visible;
+  }
+
+  .cell-sub {
+    font-size: 7.5pt;
+  }
+
+  .plan-section th,
+  .plan-section td {
+    padding: 2.5pt 4pt;
+  }
+
+  /* Pagination: each site starts a page; headers repeat; rows stay whole. */
+  .plan-overview {
+    margin-top: 14pt;
+  }
+
+  .plan-site,
+  .plan-links,
+  .plan-topology {
+    break-before: page;
+  }
+
+  .plan-tunnels,
+  .plan-external {
+    margin-top: 16pt;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tr,
+  .plan-util,
+  .plan-cover {
+    break-inside: avoid;
+  }
+
+  .band,
+  .plan-table-head,
+  h3 {
+    break-after: avoid;
+  }
+
+  /* The topology fits one landscape page. */
+  .plan-topology figure {
+    break-inside: avoid;
+  }
+
+  .plan-topology img {
+    max-width: 100%;
+    max-height: 180mm;
+    width: auto;
+    height: auto;
+  }
+
+  /*
+   * Footer with title and date. Browsers that support page-margin boxes get a
+   * real running footer (set from JS, see main.ts) and the `has-margin-boxes`
+   * class; the others get a fixed element, which print engines repeat on
+   * every page.
+   */
+  .print-footer {
+    display: block;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: -11mm;
+    font-size: 8pt;
+    color: var(--ink-faint);
+  }
+
+  .has-margin-boxes .print-footer {
+    display: none;
+  }
+}
