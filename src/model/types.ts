@@ -382,7 +382,7 @@ export interface Dhcp {
    */
   on?: Slug;
   /**
-   * Address of the DHCP server that requests are relayed to. Used with `mode: relay`. A warning is shown if it is not inside any subnet of the same site.
+   * Address of the DHCP server. With `mode: relay` it is where requests are relayed to, and a warning is shown if it is not inside any subnet of the same site. With `mode: server` it is optional and names a server that sits in this VLAN, so it must be inside the VLAN's subnet.
    */
   server?: IPv4Address;
   /**

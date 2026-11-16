@@ -178,7 +178,7 @@ DHCP settings of a VLAN.
 | --- | --- | --- | --- | --- |
 | `mode` | `server` \| `relay` \| `none` | yes |  | Where DHCP leases for the VLAN come from.<br>• `server`: A device of the site runs the DHCP pool itself; name it with `on`.<br>• `relay`: The gateway forwards DHCP requests to the server given in `server` (ip helper-address).<br>• `none`: No DHCP in this VLAN; all hosts are static. |
 | `on` | [Slug](#slug) | no |  | Id of the device that runs the DHCP pool. Used with `mode: server`. |
-| `server` | [IPv4 address](#ipv4-address) | no |  | Address of the DHCP server that requests are relayed to. Used with `mode: relay`. A warning is shown if it is not inside any subnet of the same site. |
+| `server` | [IPv4 address](#ipv4-address) | no |  | Address of the DHCP server. With `mode: relay` it is where requests are relayed to, and a warning is shown if it is not inside any subnet of the same site. With `mode: server` it is optional and names a server that sits in this VLAN, so it must be inside the VLAN's subnet. |
 | `pool` | [Pool](#pool) | no |  | Range of addresses handed out. Defaults to the address after the gateway up to the last usable address. |
 | `exclude` | string[] | no |  | Addresses or ranges inside the pool that must not be handed out. Each entry is a single address or `first-last`.<br>Example: `["10.10.1.2-10.10.1.19","10.10.1.50"]` |
 
@@ -349,7 +349,7 @@ Examples: `10.10.1.1`
 
 An IPv4 address with a prefix length. For a subnet the address must be the network address; for an interface it is the interface's own address.
 
-Pattern: `^(\d{1,3}\.){3}\d{1,3}/\d{1,2}$`
+Pattern: `^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}/(3[0-2]|[12]?\d)$`
 
 Examples: `10.10.1.0/26`
 
@@ -357,7 +357,7 @@ Examples: `10.10.1.0/26`
 
 An IPv4 address, optionally followed by a prefix length. When the prefix is given it must match the subnet the address lives in.
 
-Pattern: `^(\d{1,3}\.){3}\d{1,3}(/\d{1,2})?$`
+Pattern: `^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(/(3[0-2]|[12]?\d))?$`
 
 Examples: `10.10.1.1`, `10.10.1.1/26`
 
