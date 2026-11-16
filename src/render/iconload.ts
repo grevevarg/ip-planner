@@ -39,7 +39,7 @@ async function load(ref: string): Promise<LoadedIcon | null> {
   const original = await response.blob();
   // Some servers send SVG as text/plain or application/octet-stream; the data URI must say what it is.
   const blob = isSvg ? new Blob([original], { type: 'image/svg+xml' }) : original;
-  let natural: { width: number; height: number } | null = null;
+  let natural: { width: number; height: number } | null;
   if (isSvg) {
     const text = await blob.text();
     // Some hosts answer a missing file with an HTML page and status 200; that is not an icon.
