@@ -224,6 +224,15 @@ const marginBoxes = 'CSSMarginRule' in window;
 document.documentElement.classList.toggle('has-margin-boxes', marginBoxes);
 const footerStyle = document.createElement('style');
 document.head.append(footerStyle);
+if (!marginBoxes) {
+  // The fixed footer needs room at the bottom of every printed page: a table footer row repeats there.
+  const frame = document.createElement('table');
+  frame.className = 'print-frame';
+  frame.setAttribute('role', 'presentation');
+  frame.innerHTML = '<tbody><tr><td></td></tr></tbody><tfoot><tr><td><div class="print-frame-space"></div></td></tr></tfoot>';
+  sheet.replaceWith(frame);
+  frame.querySelector('td')!.append(sheet);
+}
 
 function setFooter(text: string): void {
   printFooter.textContent = text;
@@ -381,6 +390,19 @@ const actions: Record<string, () => void | Promise<void>> = {
 document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach((button) => {
   button.addEventListener('click', () => void actions[button.dataset.action!]());
 });
+
+// Ctrl/Cmd+S saves the .yaml and Ctrl/Cmd+P exports the PDF, instead of the browser's own save and print.
+const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+window.addEventListener('keydown', (event) => {
+  if (!(isMac ? event.metaKey : event.ctrlKey) || event.altKey || event.shiftKey) return;
+  const action = { s: 'save', p: 'export' }[event.key.toLowerCase()];
+  if (!action) return;
+  event.preventDefault();
+  void actions[action]();
+});
+const modifier = isMac ? '⌘' : 'Ctrl+';
+$<HTMLButtonElement>('[data-action="save"]').title = `Download the YAML (${modifier}S)`;
+$<HTMLButtonElement>('[data-action="export"]').title = `Print the plan and topology to PDF (${modifier}P)`;
 
 setupSplitter($<HTMLElement>('.splitter'), workspace, store.loadSplit(), store.saveSplit);
 

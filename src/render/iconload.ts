@@ -41,10 +41,14 @@ async function load(ref: string): Promise<LoadedIcon | null> {
   const blob = isSvg ? new Blob([original], { type: 'image/svg+xml' }) : original;
   let natural: { width: number; height: number } | null = null;
   if (isSvg) {
-    natural = svgAspect(await blob.text());
+    const text = await blob.text();
+    // Some hosts answer a missing file with an HTML page and status 200; that is not an icon.
+    if (!/<svg[\s>]/i.test(text)) return null;
+    natural = svgAspect(text);
   } else {
     const bitmap = await createImageBitmap(blob).catch(() => null);
-    if (bitmap) natural = { width: bitmap.width, height: bitmap.height };
+    if (!bitmap) return null;
+    natural = { width: bitmap.width, height: bitmap.height };
   }
   const size = fitIcon(natural);
   return { embedded: { href: await toDataUri(blob), ...size }, readable: { href: path, ...size } };

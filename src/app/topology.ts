@@ -67,7 +67,8 @@ export function createTopology(elements: { stage: HTMLElement; status: HTMLEleme
         elements.stage.replaceChildren(safe.element);
         const missing = [...icons].filter(([, icon]) => icon === null).map(([ref]) => ref);
         const note = missing.length ? ` Icon not found: ${missing.join(', ')} (drawn as a plain box).` : '';
-        elements.status.textContent = `Drawn with ${settings.layout} in ${(result.ms / 1000).toFixed(1)} s.${note}`;
+        const took = result.ms < 1000 ? `${result.ms} ms` : `${(result.ms / 1000).toFixed(1)} s`;
+        elements.status.textContent = `Drawn with ${settings.layout} in ${took}.${note}`;
       } else {
         error = result.status === 'error' ? result.message : 'D2 returned something that is not an SVG.';
         const box = document.createElement('pre');

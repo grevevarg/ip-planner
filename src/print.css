@@ -122,9 +122,19 @@
     display: table-header-group;
   }
 
-  tr,
+  .plan-section tr,
   .plan-util,
   .plan-cover {
+    break-inside: avoid;
+  }
+
+  /*
+   * Keep a table with its heading, and the short closing sections with their
+   * band. Anything longer than a page still breaks, between rows.
+   */
+  .plan-table,
+  .plan-tunnels,
+  .plan-external {
     break-inside: avoid;
   }
 
@@ -154,20 +164,52 @@
   /*
    * Footer with title and date. Browsers that support page-margin boxes get a
    * real running footer (set from JS, see main.ts) and the `has-margin-boxes`
-   * class; the others get a fixed element, which print engines repeat on
-   * every page.
+   * class. The others get a fixed element, which print engines repeat on every
+   * page. To keep content from running underneath it, the sheet is wrapped in
+   * a one-cell table (`.print-frame`, added by main.ts in those browsers) whose
+   * footer row is repeated at the bottom of every page and reserves the space.
    */
   .print-footer {
     display: block;
     position: fixed;
     left: 0;
     right: 0;
-    bottom: -9mm;
+    bottom: 0;
     font-size: 8pt;
+    line-height: 5mm;
     color: var(--ink-faint);
   }
 
   .has-margin-boxes .print-footer {
     display: none;
+  }
+
+  .print-frame {
+    display: table;
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .print-frame > tbody {
+    display: table-row-group;
+  }
+
+  .print-frame > tfoot {
+    display: table-footer-group;
+  }
+
+  .print-frame > tbody > tr,
+  .print-frame > tfoot > tr {
+    display: table-row;
+  }
+
+  .print-frame > tbody > tr > td,
+  .print-frame > tfoot > tr > td {
+    display: table-cell;
+    padding: 0;
+  }
+
+  .print-frame-space {
+    height: 7mm;
   }
 }

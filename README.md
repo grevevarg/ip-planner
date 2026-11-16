@@ -31,6 +31,9 @@ Things worth knowing:
   "given by teacher".
 - **Share link** puts the whole YAML into the URL. Anyone with the link can read
   it.
+- Your work is saved in the browser as you type. **Save .yaml** (Ctrl/Cmd+S)
+  downloads the file; **Export PDF** (Ctrl/Cmd+P) prints the plan and topology.
+- Each table has a **Columns** menu. Hidden columns stay hidden in the PDF.
 
 ### Checks
 

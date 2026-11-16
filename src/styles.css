@@ -984,6 +984,19 @@ select {
   display: none;
 }
 
+/* Only used for printing in browsers without page-margin boxes (see print.css). Invisible on screen. */
+.print-frame,
+.print-frame > tbody,
+.print-frame > tbody > tr,
+.print-frame > tbody > tr > td {
+  display: block;
+  padding: 0;
+}
+
+.print-frame > tfoot {
+  display: none;
+}
+
 /* ── Narrow screens: stack the panes ───────────────────────────────────── */
 
 @media (max-width: 820px) {
