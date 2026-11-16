@@ -14,5 +14,11 @@ export default defineConfig({
   test: {
     include: ['src/**/*.test.ts', 'scripts/**/*.test.ts'],
     environment: 'node',
+    coverage: {
+      // The IP maths must stay fully covered; the rest of the app is not gated.
+      include: ['src/ip/**'],
+      exclude: ['src/ip/**/*.test.ts'],
+      thresholds: { statements: 100, branches: 100, functions: 100, lines: 100 },
+    },
   },
 });
