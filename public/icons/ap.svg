@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Wireless access point. Original artwork for netplan, drawn to match the generic icon set. Licence: CC0-1.0. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 146.5 146.5" width="41.3mm" height="41.3mm">
+  <rect x="3.25" y="3.25" width="140" height="140" rx="9" fill="#dddddd" stroke="#0c3c86" stroke-width="6.5" stroke-linejoin="round"/>
+  <g fill="none" stroke="#104ead" stroke-width="9" stroke-linecap="round">
+    <path d="M30 62a61 61 0 0 1 86.5 0"/>
+    <path d="M45.5 79.5a39 39 0 0 1 55.5 0"/>
+    <path d="M60.5 96.5a18 18 0 0 1 25.5 0"/>
+  </g>
+  <circle cx="73.25" cy="113" r="7.5" fill="#104ead"/>
+</svg>

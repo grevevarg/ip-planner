@@ -14,8 +14,8 @@ meta:
     All values in this example are illustrative.
 
 diagram:
-  layout: elk            # dagre | elk
-  direction: down        # up | down | left | right
+  layout: dagre          # dagre | elk
+  direction: right       # up | down | left | right (right fits a landscape page best)
   theme: default         # default | dark | sketch
 
 external:                # things you connect to but don't own

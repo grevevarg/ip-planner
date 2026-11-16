@@ -6,7 +6,7 @@
 
 @page {
   size: A4 landscape;
-  margin: 12mm 12mm 15mm;
+  margin: 12mm;
 }
 
 @media print {
@@ -134,14 +134,19 @@
     break-after: avoid;
   }
 
-  /* The topology fits one landscape page. */
+  /*
+   * The topology fits one landscape page together with its heading. The page
+   * is 186mm tall inside the margins and the heading band takes about 14mm, so
+   * the image is capped a little below the 180mm one might expect; at 180mm
+   * the heading would be left alone on the previous page.
+   */
   .plan-topology figure {
     break-inside: avoid;
   }
 
   .plan-topology img {
     max-width: 100%;
-    max-height: 180mm;
+    max-height: 168mm;
     width: auto;
     height: auto;
   }
@@ -157,7 +162,7 @@
     position: fixed;
     left: 0;
     right: 0;
-    bottom: -11mm;
+    bottom: -9mm;
     font-size: 8pt;
     color: var(--ink-faint);
   }

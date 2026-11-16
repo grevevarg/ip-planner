@@ -19,10 +19,11 @@ import './styles.css';
 import './print.css';
 
 import { $, debounce } from './app/dom';
-import { downloadText, fileStem, pickTextFile } from './app/files';
+import { copyText, downloadText, fileStem, pickTextFile } from './app/files';
 import { store } from './app/persist';
 import { badge, renderProblems } from './app/problems';
 import { setupSplitter } from './app/splitter';
+import { createTopology } from './app/topology';
 import { createEditor } from './editor/editor';
 import type { Diagnostic } from './model/diagnostics';
 import { analyze, type Analysis } from './model/validate';
@@ -40,9 +41,11 @@ sites:
       - { id: 10, name: Staff, hosts: 50 }
 `;
 
-type TabId = 'plan' | 'problems';
+type TabId = 'plan' | 'topology' | 'd2' | 'problems';
 const TABS: { id: TabId; label: string }[] = [
   { id: 'plan', label: 'Plan' },
+  { id: 'topology', label: 'Topology' },
+  { id: 'd2', label: 'D2 source' },
   { id: 'problems', label: 'Problems' },
 ];
 
@@ -57,6 +60,7 @@ app.innerHTML = `
     </div>
     <span class="toolbar-spacer"></span>
     <span class="toast" role="status" aria-live="polite"></span>
+    <button type="button" class="btn btn-outline" data-action="svg">Download SVG</button>
     <button type="button" class="btn btn-primary" data-action="export">Export PDF</button>
   </header>
   <main class="workspace">
@@ -75,6 +79,18 @@ app.innerHTML = `
       <p class="stale-note" hidden></p>
       <div class="panel panel-plan" role="tabpanel" id="panel-plan" aria-labelledby="tab-plan">
         <article class="sheet"><p class="plan-empty">Nothing to show yet. Write a plan on the left, or open a .yaml file.</p></article>
+      </div>
+      <div class="panel panel-topology" role="tabpanel" id="panel-topology" aria-labelledby="tab-topology" hidden>
+        <div class="topology-bar"><span data-topology-status>The diagram appears here once the YAML is valid.</span></div>
+        <div class="topology-stage"></div>
+      </div>
+      <div class="panel panel-d2" role="tabpanel" id="panel-d2" aria-labelledby="tab-d2" hidden>
+        <div class="code-bar">
+          <span>Generated from the YAML and read-only. Icons are shown as paths here; the drawn diagram embeds them.</span>
+          <span class="toolbar-spacer"></span>
+          <button type="button" class="btn btn-outline" data-action="copy-d2">Copy D2</button>
+        </div>
+        <pre class="code-block" data-d2-source tabindex="0"></pre>
       </div>
       <div class="panel panel-problems" role="tabpanel" id="panel-problems" aria-labelledby="tab-problems" hidden>
         <div data-problems></div>
@@ -107,6 +123,35 @@ function toast(message: string, kind: 'info' | 'warning' = 'info'): void {
   toast.timer = window.setTimeout(() => (toastEl.textContent = ''), kind === 'warning' ? 9000 : 4000);
 }
 toast.timer = 0 as number | undefined;
+
+// ── Topology ───────────────────────────────────────────────────────────────
+
+/** Puts the current diagram into the Topology section of the plan (which is what gets printed). */
+function fillTopologySlot(): void {
+  const slot = sheet.querySelector<HTMLElement>('[data-topology-slot]');
+  if (!slot) return;
+  const url = topology.imageUrl();
+  if (url) {
+    const image = document.createElement('img');
+    image.src = url;
+    image.alt = 'Topology diagram';
+    slot.replaceChildren(image);
+  } else if (topology.error()) {
+    const note = document.createElement('p');
+    note.className = 'plan-empty';
+    note.textContent = 'The topology diagram could not be drawn. See the Topology tab for the reason.';
+    slot.replaceChildren(note);
+  }
+}
+
+const topology = createTopology(
+  {
+    stage: $<HTMLElement>('.topology-stage'),
+    status: $<HTMLElement>('[data-topology-status]'),
+    source: $<HTMLElement>('[data-d2-source]'),
+  },
+  fillTopologySlot,
+);
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
 
@@ -154,6 +199,7 @@ function setFooter(text: string): void {
 function renderViews(): void {
   if (!lastGood?.model) return;
   sheet.innerHTML = renderPlan(lastGood.model, lastGood.diagnostics, { hidden: hiddenColumns });
+  fillTopologySlot();
   setFooter(footerText(lastGood.model));
   document.title = `${lastGood.model.meta.title ?? 'Untitled plan'} – netplan`;
 }
@@ -166,6 +212,7 @@ function update(text: string): void {
   if (!current.hasErrors && current.model) {
     lastGood = current;
     renderViews();
+    topology.update(current.model);
   }
   // With errors the last good render stays up, dimmed, until the file is fixed.
   const errors = current.diagnostics.filter((d) => d.severity === 'error').length;
@@ -240,9 +287,24 @@ const actions: Record<string, () => void | Promise<void>> = {
       return;
     }
     if (current?.hasErrors) toast('The YAML has errors, so the PDF shows the last version without them.', 'warning');
-    selectTab('plan');
+    // The PDF includes the diagram, so wait for a redraw that is still under way.
+    await topology.settled();
     await document.fonts.ready;
+    await sheet.querySelector<HTMLImageElement>('[data-topology-slot] img')?.decode().catch(() => undefined);
     window.print();
+  },
+  svg() {
+    const svg = topology.svg();
+    if (!svg) {
+      toast(topology.error() ? 'The diagram could not be drawn, so there is no SVG to download.' : 'The diagram is not ready yet.', 'warning');
+      return;
+    }
+    const name = `${fileStem(lastGood?.model?.meta.title)}-topology.svg`;
+    downloadText(name, svg, 'image/svg+xml');
+    toast(`Downloaded ${name}`);
+  },
+  async 'copy-d2'() {
+    toast((await copyText(topology.source())) ? 'Copied the D2 source' : 'Could not copy. Select the text and copy it by hand.');
   },
 };
 
