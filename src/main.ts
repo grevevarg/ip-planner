@@ -18,14 +18,18 @@ import '@fontsource/ibm-plex-mono/latin-ext-400.css';
 import './styles.css';
 import './print.css';
 
-import { $, debounce } from './app/dom';
+import { renderDocs } from './app/docs';
+import { $, debounce, escapeHtml } from './app/dom';
+import { listExamples, loadExample } from './app/examples';
 import { copyText, downloadText, fileStem, pickTextFile } from './app/files';
 import { store } from './app/persist';
 import { badge, renderProblems } from './app/problems';
+import { LONG_LINK_CHARS, shareFragment, textFromFragment } from './app/share';
 import { setupSplitter } from './app/splitter';
 import { createTopology } from './app/topology';
 import { createEditor } from './editor/editor';
 import type { Diagnostic } from './model/diagnostics';
+import { freezeYaml } from './model/freeze';
 import { analyze, type Analysis } from './model/validate';
 import { footerText, renderPlan } from './render/plan';
 
@@ -41,12 +45,13 @@ sites:
       - { id: 10, name: Staff, hosts: 50 }
 `;
 
-type TabId = 'plan' | 'topology' | 'd2' | 'problems';
+type TabId = 'plan' | 'topology' | 'd2' | 'problems' | 'docs';
 const TABS: { id: TabId; label: string }[] = [
   { id: 'plan', label: 'Plan' },
   { id: 'topology', label: 'Topology' },
   { id: 'd2', label: 'D2 source' },
   { id: 'problems', label: 'Problems' },
+  { id: 'docs', label: 'Docs' },
 ];
 
 const app = $<HTMLDivElement>('#app');
@@ -57,6 +62,14 @@ app.innerHTML = `
       <button type="button" class="btn" data-action="new">New</button>
       <button type="button" class="btn" data-action="open">Open .yaml</button>
       <button type="button" class="btn" data-action="save">Save .yaml</button>
+      <details class="menu" data-examples>
+        <summary class="btn">Examples</summary>
+        <div class="menu-list"><p class="problems-empty">Loading the examples…</p></div>
+      </details>
+    </div>
+    <div class="toolbar-group">
+      <button type="button" class="btn" data-action="copy-resolved" title="Copy the YAML with every auto value written in, so the plan stops moving">Copy resolved YAML</button>
+      <button type="button" class="btn" data-action="share" title="Copy a link that contains this plan">Share link</button>
     </div>
     <span class="toolbar-spacer"></span>
     <span class="toast" role="status" aria-live="polite"></span>
@@ -95,6 +108,9 @@ app.innerHTML = `
       <div class="panel panel-problems" role="tabpanel" id="panel-problems" aria-labelledby="tab-problems" hidden>
         <div data-problems></div>
       </div>
+      <div class="panel panel-docs" role="tabpanel" id="panel-docs" aria-labelledby="tab-docs" hidden>
+        <article class="docs"><p class="panel-note">Loading the schema documentation…</p></article>
+      </div>
     </section>
   </main>
   <div class="print-footer" aria-hidden="true"></div>`;
@@ -113,6 +129,8 @@ let current: Analysis | null = null;
 /** The latest analysis without errors; this is what the views show. */
 let lastGood: Analysis | null = null;
 let fileName: string | undefined;
+/** The text as it was last loaded or saved; anything else in the editor is unsaved work. */
+let pristine = '';
 /** Columns the user has switched off, per table. Kept in localStorage and honoured in print. */
 const hiddenColumns = store.loadColumns();
 
@@ -155,18 +173,38 @@ const topology = createTopology(
 
 // ── Tabs ───────────────────────────────────────────────────────────────────
 
+let docsLoaded = false;
+
 function selectTab(id: TabId): void {
   for (const tab of TABS) {
     $<HTMLButtonElement>(`#tab-${tab.id}`).setAttribute('aria-selected', String(tab.id === id));
     $<HTMLElement>(`#panel-${tab.id}`).hidden = tab.id !== id;
   }
+  store.saveTab(id);
+  if (id === 'docs' && !docsLoaded) {
+    docsLoaded = true;
+    const docs = $<HTMLElement>('.docs');
+    renderDocs(docs).catch(() => {
+      docsLoaded = false;
+      docs.innerHTML = '<p class="panel-note">The documentation could not be loaded. Check your connection and open this tab again.</p>';
+    });
+  }
 }
 for (const tab of TABS) $<HTMLButtonElement>(`#tab-${tab.id}`).addEventListener('click', () => selectTab(tab.id));
-selectTab('plan');
+const savedTab = store.loadTab();
+selectTab(TABS.some((tab) => tab.id === savedTab) ? (savedTab as TabId) : 'plan');
 
 // ── Editor and the analyse → render loop ───────────────────────────────────
 
-const editor = createEditor($<HTMLDivElement>('.editor-host'), { text: STARTER, onChange: debounce(update, 150) });
+// Every edit is analysed and autosaved; text put there by the app itself (open, example, shared link) is not.
+const editor = createEditor($<HTMLDivElement>('.editor-host'), {
+  text: '',
+  onChange: debounce((text: string) => {
+    update(text);
+    // `pristine` is what the app itself last put in the editor, so anything else is the user's work.
+    if (text !== pristine) store.saveText(text);
+  }, 150),
+});
 
 function showProblems(diagnostics: Diagnostic[]): void {
   const info = badge(diagnostics);
@@ -258,28 +296,60 @@ document.addEventListener('click', (event) => {
 
 // ── Toolbar actions ────────────────────────────────────────────────────────
 
-function loadText(text: string, name?: string): void {
-  fileName = name;
+/**
+ * Replaces the editor content. `autosave: false` is for a plan opened from a
+ * shared link: it is shown, but the visitor's own saved plan is kept until
+ * they start editing.
+ */
+function loadText(text: string, options: { name?: string; autosave?: boolean } = {}): void {
+  fileName = options.name;
+  pristine = text;
   editor.setText(text);
   update(text);
+  if (options.autosave !== false) store.saveText(text);
+}
+
+/** True when it is fine to replace the editor content. Asks first if there is unsaved work. */
+function mayDiscard(question: string): boolean {
+  return editor.getText() === pristine || window.confirm(`${question} Changes since you last saved the .yaml will be lost.`);
 }
 
 const actions: Record<string, () => void | Promise<void>> = {
   new() {
-    if (editor.getText().trim() !== STARTER.trim() && !window.confirm('Start a new plan? The current text will be discarded.')) return;
+    if (!mayDiscard('Start a new plan?')) return;
     loadText(STARTER);
     toast('Started a new plan');
   },
   async open() {
+    if (!mayDiscard('Open another file?')) return;
     const file = await pickTextFile('.yaml,.yml,text/yaml,text/plain');
     if (!file) return;
-    loadText(file.text, file.name);
+    loadText(file.text, { name: file.name });
     toast(`Opened ${file.name}`);
   },
   save() {
     const name = fileName ?? `${fileStem(current?.model?.meta.title ?? lastGood?.model?.meta.title)}.yaml`;
     downloadText(name, editor.getText(), 'text/yaml');
+    pristine = editor.getText();
     toast(`Saved ${name}`);
+  },
+  async 'copy-resolved'() {
+    // Analyse the text as it is right now rather than waiting for the debounce.
+    const analysis = analyze(editor.getText());
+    if (analysis.hasErrors || !analysis.model) {
+      toast('Fix the errors first: auto values cannot be computed while the YAML has errors.', 'warning');
+      return;
+    }
+    const ok = await copyText(freezeYaml(analysis.text, analysis.model));
+    toast(ok ? 'Copied the YAML with all auto values written in' : 'Could not copy to the clipboard.', ok ? 'info' : 'warning');
+  },
+  async share() {
+    const url = `${window.location.origin}${window.location.pathname}${shareFragment(editor.getText())}`;
+    const ok = await copyText(url);
+    if (!ok) toast('Could not copy the link to the clipboard.', 'warning');
+    else if (url.length > LONG_LINK_CHARS) {
+      toast(`Link copied, but it is ${(url.length / 1000).toFixed(1)} kB long and some apps cut long links. Sending the saved .yaml is safer.`, 'warning');
+    } else toast('Link copied. Anyone with the link can read the plan.');
   },
   async export() {
     if (!lastGood) {
@@ -314,4 +384,80 @@ document.querySelectorAll<HTMLButtonElement>('[data-action]').forEach((button) =
 
 setupSplitter($<HTMLElement>('.splitter'), workspace, store.loadSplit(), store.saveSplit);
 
-update(editor.getText());
+// ── Examples menu ──────────────────────────────────────────────────────────
+
+const examplesMenu = $<HTMLDetailsElement>('[data-examples]');
+const examplesList = $<HTMLElement>('.menu-list', examplesMenu);
+
+async function openExample(file: string, title: string): Promise<void> {
+  examplesMenu.open = false;
+  if (!mayDiscard(`Load the example "${title}"?`)) return;
+  try {
+    loadText(await loadExample(file));
+    toast(`Loaded the example "${title}"`);
+  } catch {
+    toast('The example could not be loaded. Check your connection and try again.', 'warning');
+  }
+}
+
+listExamples().then(
+  (examples) => {
+    examplesList.innerHTML = examples
+      .map((e, index) => `<button type="button" class="menu-item" data-example="${index}">${escapeHtml(e.title)}<small>${escapeHtml(e.description ?? '')}</small></button>`)
+      .join('');
+    examplesList.querySelectorAll<HTMLButtonElement>('[data-example]').forEach((button) => {
+      const example = examples[Number(button.dataset.example)];
+      button.addEventListener('click', () => void openExample(example.file, example.title));
+    });
+  },
+  () => {
+    examplesList.innerHTML = '<p class="problems-empty">The examples could not be loaded.</p>';
+  },
+);
+
+// ── Start-up: a shared link wins, then the autosaved plan, then the main example ──
+
+/** Takes a shared plan out of the URL fragment, if there is one. Returns whether the fragment was a share link. */
+function takeSharedPlan(): { isShareLink: boolean; text: string | null } {
+  const fragment = window.location.hash;
+  const isShareLink = fragment.startsWith('#y=');
+  // Drop the fragment so a reload does not throw away edits made since.
+  if (isShareLink) window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  return { isShareLink, text: textFromFragment(fragment) };
+}
+
+function openShared(text: string): void {
+  const saved = store.loadText();
+  loadText(text, { autosave: false });
+  toast(saved !== null && saved !== text ? 'Opened a shared plan. Your own plan stays saved until you edit this one.' : 'Opened a shared plan');
+}
+
+// A share link pasted into the address bar while the app is open.
+window.addEventListener('hashchange', () => {
+  const shared = takeSharedPlan();
+  if (!shared.isShareLink) return;
+  if (shared.text === null) toast('The shared link is damaged, so it was ignored.', 'warning');
+  else if (mayDiscard('Open the shared plan?')) openShared(shared.text);
+});
+
+async function start(): Promise<void> {
+  const shared = takeSharedPlan();
+  if (shared.text !== null) {
+    openShared(shared.text);
+    return;
+  }
+  if (shared.isShareLink) toast('The shared link is damaged, so it was ignored.', 'warning');
+  const saved = store.loadText();
+  if (saved !== null) {
+    loadText(saved);
+    return;
+  }
+  // First visit: show the full example rather than an empty page.
+  try {
+    loadText(await loadExample('three-companies.yaml'), { autosave: false });
+  } catch {
+    loadText(STARTER, { autosave: false });
+  }
+}
+
+void start();
