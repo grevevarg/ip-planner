@@ -35,7 +35,7 @@
   --ok: #17713d;
 
   --editor-bg: #ffffff;
-  --editor-active: #f2f5f9;
+  --editor-active: rgb(30 70 130 / 0.06); /* translucent: the selection is drawn underneath the active line */
   --selection: #cfe0fb;
   --syn-key: #0f4fb4;
   --syn-string: #17212e;
@@ -70,7 +70,7 @@
     --ok: #62c98c;
 
     --editor-bg: #151c24;
-    --editor-active: #1c2530;
+    --editor-active: rgb(140 170 220 / 0.06);
     --selection: #2a426b;
     --syn-key: #8db8fb;
     --syn-string: #e3e8ee;
