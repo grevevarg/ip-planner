@@ -88,26 +88,18 @@ A group of devices you connect to but do not own, such as an ISP. Drawn as a con
 | `notes` | string | no |  | Free text shown next to the group in the plan. |
 | `devices` | [Device](#device)[] | no |  | Devices that belong to the group. |
 
-Example (shown as JSON; write it as YAML in the file):
+Example:
 
-```json
-{
-  "id": "isp",
-  "name": "ISP",
-  "locked": true,
-  "devices": [
-    {
-      "id": "isp-r1",
-      "type": "router",
-      "interfaces": [
-        {
-          "name": "f0/1",
-          "address": "203.12.20.17/28"
-        }
-      ]
-    }
-  ]
-}
+```yaml
+id: isp
+name: ISP
+locked: true
+devices:
+  - id: isp-r1
+    type: router
+    interfaces:
+      - name: f0/1
+        address: 203.12.20.17/28
 ```
 
 ## Site
@@ -156,18 +148,15 @@ A VLAN and its subnet. Give either `hosts` (the subnet is then auto-allocated in
 | `notes` | string | no |  | Free text shown in the Notes column of the VLAN table. |
 | `locked` | boolean | no | `false` | Marks the VLAN as given and not to be changed. Its baseline key in `locked_baseline` is `<site-id>:<vlan-id>`. |
 
-Example (shown as JSON; write it as YAML in the file):
+Example:
 
-```json
-{
-  "id": 10,
-  "name": "Marknad",
-  "hosts": 40,
-  "dhcp": {
-    "mode": "server",
-    "on": "linky-r1"
-  }
-}
+```yaml
+id: 10
+name: Marknad
+hosts: 40
+dhcp:
+  mode: server
+  on: linky-r1
 ```
 
 ## Dhcp

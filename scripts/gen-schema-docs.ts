@@ -6,6 +6,7 @@
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { stringify as stringifyYaml } from 'yaml';
 import { lintSchema, type JsonSchema } from './schema-lint';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -84,8 +85,8 @@ export function renderSchemaDocs(schema: JsonSchema, example: string): string {
       );
     }
     if (Array.isArray(node.examples) && node.examples.length) {
-      lines.push('', 'Example (shown as JSON; write it as YAML in the file):', '', '```json');
-      lines.push(JSON.stringify(node.examples[0], null, 2), '```');
+      lines.push('', 'Example:', '', '```yaml');
+      lines.push(stringifyYaml(node.examples[0]).trimEnd(), '```');
     }
     return lines.join('\n');
   };
