@@ -23,7 +23,7 @@ describe('cursorContext', () => {
 
   it('walks up through nested lists and maps', () => {
     const doc = `sites:
-  - id: linky
+  - id: braintech
     vlans:
       - id: 10
         dhcp:

@@ -34,6 +34,7 @@ import type {
   Diagram,
   ExternalGroup,
   Interface,
+  Lan,
   Link,
   Meta,
   Netplan,
@@ -41,6 +42,7 @@ import type {
   Site,
   Tunnel,
   Vlan,
+  Wan,
 } from './types';
 
 /** A value plus whether the app computed it (`auto`) or the file stated it. */
@@ -74,12 +76,16 @@ export interface RDhcp {
   size: number;
 }
 
-export interface RVlan {
-  raw: Vlan;
+/** What VLANs and LANs have in common: a subnet with a gateway, DHCP and statics. */
+export interface RNet {
+  raw: Vlan | Lan;
   path: Path;
   siteId: string;
-  id: number;
   name: string;
+  /** Short name for messages: `VLAN 10` or `LAN "it"`. */
+  title: string;
+  /** `title` plus the site: `VLAN 10 of braintech`. */
+  label: string;
   /** `hosts` plus growth headroom; what an auto-allocated subnet is sized for. */
   hostsNeeded?: number;
   subnet?: Val<Subnet>;
@@ -87,12 +93,31 @@ export interface RVlan {
   gateway?: Val<Ip>;
   dhcp?: RDhcp;
   statics: RStatic[];
-  native: boolean;
   locked: boolean;
 }
 
+export interface RVlan extends RNet {
+  kind: 'vlan';
+  raw: Vlan;
+  id: number;
+  native: boolean;
+}
+
+/** An untagged network on one router interface. */
+export interface RLan extends RNet {
+  kind: 'lan';
+  raw: Lan;
+  id: string;
+  /** The device and interface the LAN is attached to; the interface holds the gateway. */
+  deviceId: string;
+  ifName: string;
+}
+
+/** A VLAN or a LAN. */
+export type RNetwork = RVlan | RLan;
+
 /** Where an interface's address came from. */
-export type AddressSource = 'interface' | 'wan' | 'link' | 'vlan-gateway' | 'subinterface';
+export type AddressSource = 'interface' | 'wan' | 'link' | 'vlan-gateway' | 'lan-gateway' | 'subinterface';
 
 export interface RInterface {
   deviceId: string;
@@ -106,6 +131,8 @@ export interface RInterface {
   role?: string;
   /** VLAN the interface sits in (SVI, host NIC or sub-interface). */
   vlan?: number;
+  /** LAN the interface sits in: the LAN's own gateway interface, or a host NIC that says `lan:`. */
+  lan?: string;
   /** Name of the parent interface when this is a sub-interface. */
   parent?: string;
   /** Raw `link` target. */
@@ -142,10 +169,20 @@ export interface RDevice {
   /** Interfaces in file order, each followed by its sub-interfaces. */
   interfaces: RInterface[];
   ports: RPort[];
+  /** Network all ports are in, for a device not configured per port (an unmanaged switch). Auto when inferred from the cabling. */
+  vlan?: Val<number>;
+  lan?: Val<string>;
+  /** Raw `uplink` target. */
+  uplink?: string;
 }
 
+/** Device types that route between networks, so they are never "in" one network. */
+export const ROUTING_TYPES = new Set(['router', 'l3switch', 'firewall']);
+
 export interface RWan {
+  raw: Wan;
   path: Path;
+  name?: string;
   deviceId: string;
   ifName: string;
   address?: Cidr;
@@ -161,8 +198,10 @@ export interface RSite {
   name: string;
   supernet?: Subnet;
   color?: string;
-  wan?: RWan;
+  /** Uplinks in file order; `wan` may be written as one object or as a list. */
+  wans: RWan[];
   vlans: RVlan[];
+  lans: RLan[];
   devices: RDevice[];
   locked: boolean;
 }
@@ -236,7 +275,7 @@ export interface RConnection {
   kind: 'cable' | 'wan' | 'link';
   a: REndpoint;
   b: REndpoint;
-  /** Display name (links only). */
+  /** Display name (links and named WAN uplinks). */
   name?: string;
   subnet?: Subnet;
   /** VLANs carried when one end is a trunk port. */
@@ -309,6 +348,7 @@ function resolveDevice(raw: Device, path: Path, owner: { siteId?: string; groupI
       addressSource: address ? 'interface' : undefined,
       role: iface.role,
       vlan: iface.vlan,
+      lan: iface.lan,
       link: iface.link,
       description: iface.description,
       hasSubinterfaces: iface.subinterfaces !== undefined,
@@ -334,18 +374,21 @@ function resolveDevice(raw: Device, path: Path, owner: { siteId?: string; groupI
     locked: raw.locked ?? false,
     interfaces,
     ports,
+    vlan: raw.vlan === undefined ? undefined : given(raw.vlan),
+    lan: raw.lan === undefined ? undefined : given(raw.lan),
+    uplink: raw.uplink,
   };
 }
 
-function resolveDhcp(vlan: RVlan): RDhcp | undefined {
-  const raw = vlan.raw.dhcp;
+function resolveDhcp(net: RNet): RDhcp | undefined {
+  const raw = net.raw.dhcp;
   if (!raw) return undefined;
   const exclude = (raw.exclude ?? []).map((e) => parseRange(e)).filter((r): r is IpRange => r !== null);
   const dhcp: RDhcp = { mode: raw.mode, on: raw.on, server: ipOf(raw.server), exclude, effective: [], size: 0 };
   if (raw.mode === 'none') return dhcp;
 
-  const info = vlan.info;
-  const gateway = vlan.gateway?.value;
+  const info = net.info;
+  const gateway = net.gateway?.value;
   if (raw.pool) {
     const start = ipOf(raw.pool.start);
     const end = ipOf(raw.pool.end);
@@ -362,7 +405,7 @@ function resolveDhcp(vlan: RVlan): RDhcp | undefined {
   if (dhcp.pool) {
     const holes = [...exclude];
     // Explicit pools must not contain statics (STATIC_IN_POOL); auto pools step around them.
-    if (dhcp.pool.auto) holes.push(...vlan.statics.map((s) => ({ start: s.ip, end: s.ip })));
+    if (dhcp.pool.auto) holes.push(...net.statics.map((s) => ({ start: s.ip, end: s.ip })));
     if (gateway !== undefined) holes.push({ start: gateway, end: gateway });
     dhcp.effective = subtractRanges(dhcp.pool.value, holes);
     dhcp.size = dhcp.effective.reduce((sum, r) => sum + rangeSize(r), 0);
@@ -392,45 +435,61 @@ export function resolve(raw: Netplan, report: Report): ResolvedModel {
     };
   });
 
+  /** The fields VLANs and LANs share, read straight from the file. */
+  const netBase = (net: Vlan | Lan, path: Path, siteId: string) => {
+    const cidr = cidrOf(net.subnet);
+    return {
+      path,
+      siteId,
+      hostsNeeded: net.hosts === undefined ? undefined : Math.ceil(net.hosts * (1 + (net.growth_percent ?? 0) / 100)),
+      subnet: cidr ? given(toSubnet(cidr)) : undefined,
+      statics: (net.static ?? []).flatMap((entry, ei): RStatic[] => {
+        const ip = ipOf(entry.ip);
+        return ip === undefined ? [] : [{ name: entry.name, ip, role: entry.role, path: [...path, 'static', ei] }];
+      }),
+      locked: net.locked ?? false,
+    };
+  };
+
   const sites: RSite[] = (raw.sites ?? []).map((site, si) => {
     const path: Path = ['sites', si];
     const supernetCidr = cidrOf(site.supernet);
-    const vlans: RVlan[] = (site.vlans ?? []).map((vlan, vi) => {
-      const vlanPath = [...path, 'vlans', vi];
-      const cidr = cidrOf(vlan.subnet);
-      const hostsNeeded =
-        vlan.hosts === undefined ? undefined : Math.ceil(vlan.hosts * (1 + (vlan.growth_percent ?? 0) / 100));
+    const vlans: RVlan[] = (site.vlans ?? []).map((vlan, vi) => ({
+      ...netBase(vlan, [...path, 'vlans', vi], site.id),
+      kind: 'vlan',
+      raw: vlan,
+      id: vlan.id,
+      name: vlan.name ?? `VLAN ${vlan.id}`,
+      title: `VLAN ${vlan.id}`,
+      label: `VLAN ${vlan.id} of ${site.id}`,
+      native: vlan.native ?? false,
+    }));
+    const lans: RLan[] = (site.lans ?? []).map((lan, li) => ({
+      ...netBase(lan, [...path, 'lans', li], site.id),
+      kind: 'lan',
+      raw: lan,
+      id: lan.id,
+      name: lan.name ?? lan.id,
+      title: `LAN "${lan.id}"`,
+      label: `LAN "${lan.id}" of ${site.id}`,
+      deviceId: lan.device,
+      ifName: lan.interface,
+    }));
+    const rawWans = site.wan === undefined ? [] : Array.isArray(site.wan) ? site.wan : [site.wan];
+    const wans: RWan[] = rawWans.map((wan, wi) => {
+      const address = cidrOf(wan.address);
       return {
-        raw: vlan,
-        path: vlanPath,
-        siteId: site.id,
-        id: vlan.id,
-        name: vlan.name ?? `VLAN ${vlan.id}`,
-        hostsNeeded,
-        subnet: cidr ? given(toSubnet(cidr)) : undefined,
-        statics: (vlan.static ?? []).flatMap((entry, ei) => {
-          const ip = ipOf(entry.ip);
-          return ip === undefined
-            ? []
-            : [{ name: entry.name, ip, role: entry.role, path: [...vlanPath, 'static', ei] }];
-        }),
-        native: vlan.native ?? false,
-        locked: vlan.locked ?? false,
-      };
-    });
-    let wan: RWan | undefined;
-    if (site.wan) {
-      const address = cidrOf(site.wan.address);
-      wan = {
-        path: [...path, 'wan'],
-        deviceId: site.wan.device,
-        ifName: site.wan.interface,
+        raw: wan,
+        path: Array.isArray(site.wan) ? [...path, 'wan', wi] : [...path, 'wan'],
+        name: wan.name,
+        deviceId: wan.device,
+        ifName: wan.interface,
         address,
         subnet: address ? toSubnet(address) : undefined,
-        gateway: ipOf(site.wan.gateway),
-        nat: site.wan.nat ?? false,
+        gateway: ipOf(wan.gateway),
+        nat: wan.nat ?? false,
       };
-    }
+    });
     return {
       raw: site,
       path,
@@ -438,8 +497,9 @@ export function resolve(raw: Netplan, report: Report): ResolvedModel {
       name: site.name ?? site.id,
       supernet: supernetCidr ? toSubnet(supernetCidr) : undefined,
       color: site.color,
-      wan,
+      wans,
       vlans,
+      lans,
       devices: (site.devices ?? []).map((d, di) =>
         register(resolveDevice(d, [...path, 'devices', di], { siteId: site.id })),
       ),
@@ -447,6 +507,17 @@ export function resolve(raw: Netplan, report: Report): ResolvedModel {
     };
   });
   const siteById = new Map(sites.map((s) => [s.id, s] as const));
+  const findInterface = (deviceId: string, ifName: string): RInterface | undefined =>
+    devices.get(deviceId)?.interfaces.find((i) => i.name === ifName);
+
+  // A LAN whose interface already has an address takes its subnet (and, below,
+  // its gateway) from there, so the plan matches what is configured.
+  for (const site of sites) {
+    for (const lan of site.lans) {
+      const own = findInterface(lan.deviceId, lan.ifName)?.address?.value;
+      if (own && !lan.subnet) lan.subnet = given(toSubnet(own));
+    }
+  }
 
   const links: RLink[] = (raw.links ?? []).map((link, li) => {
     const path: Path = ['links', li];
@@ -481,8 +552,8 @@ export function resolve(raw: Netplan, report: Report): ResolvedModel {
   // with it: VLAN, link and tunnel subnets plus the networks of addressed interfaces.
   const reserved: Subnet[] = [];
   for (const site of sites) {
-    for (const vlan of site.vlans) if (vlan.subnet) reserved.push(vlan.subnet.value);
-    if (site.wan?.subnet) reserved.push(site.wan.subnet);
+    for (const net of [...site.vlans, ...site.lans]) if (net.subnet) reserved.push(net.subnet.value);
+    for (const wan of site.wans) if (wan.subnet) reserved.push(wan.subnet);
   }
   for (const link of links) if (link.subnet) reserved.push(link.subnet.value);
   for (const subnet of tunnelSubnets) if (subnet) reserved.push(subnet);
@@ -491,37 +562,40 @@ export function resolve(raw: Netplan, report: Report): ResolvedModel {
   }
 
   for (const site of sites) {
+    // VLANs and LANs share the supernet. Same-sized requests go in VLAN id
+    // order, then LANs in file order (VLAN ids stop at 4094).
+    const nets: RNetwork[] = [...site.vlans, ...site.lans];
     const requests: AllocRequest[] = [];
-    for (const vlan of site.vlans) {
-      if (vlan.subnet) continue;
-      const key = String(site.vlans.indexOf(vlan));
-      if (vlan.hostsNeeded === undefined) {
-        report('ALLOC_FAILED', `VLAN ${vlan.id} has neither \`subnet\` nor \`hosts\`, so no subnet can be allocated`, vlan.path);
-        continue;
+    nets.forEach((net, index) => {
+      if (net.subnet) return;
+      if (net.hostsNeeded === undefined) {
+        report('ALLOC_FAILED', `${net.title} has neither \`subnet\` nor \`hosts\`, so no subnet can be allocated`, net.path);
+        return;
       }
-      const prefix = prefixForHosts(vlan.hostsNeeded);
+      const prefix = prefixForHosts(net.hostsNeeded);
       if (prefix === null || !site.supernet || prefix < site.supernet.prefix) {
         report(
           'ALLOC_FAILED',
-          `VLAN ${vlan.id} needs ${vlan.hostsNeeded} hosts, which does not fit in the site supernet ${site.raw.supernet}`,
-          [...vlan.path, 'hosts'],
+          `${net.title} needs ${net.hostsNeeded} hosts, which does not fit in the site supernet ${site.raw.supernet}`,
+          [...net.path, 'hosts'],
         );
-        continue;
+        return;
       }
-      requests.push({ key, prefix, order: vlan.id });
-    }
+      const order = net.kind === 'vlan' ? net.id : 5000 + index;
+      requests.push({ key: String(index), prefix, order });
+    });
     if (!site.supernet || requests.length === 0) continue;
     const { allocated, failed } = allocateVlsm(site.supernet, reserved, requests);
     for (const [key, subnet] of allocated) {
-      site.vlans[Number(key)].subnet = derived(subnet);
+      nets[Number(key)].subnet = derived(subnet);
       reserved.push(subnet);
     }
     for (const key of failed) {
-      const vlan = site.vlans[Number(key)];
+      const net = nets[Number(key)];
       report(
         'ALLOC_FAILED',
-        `No free /${prefixForHosts(vlan.hostsNeeded!)} left in ${site.raw.supernet} for VLAN ${vlan.id} (${vlan.hostsNeeded} hosts)`,
-        [...vlan.path, 'hosts'],
+        `No free /${prefixForHosts(net.hostsNeeded!)} left in ${site.raw.supernet} for ${net.title} (${net.hostsNeeded} hosts)`,
+        [...net.path, 'hosts'],
       );
     }
   }
@@ -550,36 +624,50 @@ export function resolve(raw: Netplan, report: Report): ResolvedModel {
     }
   }
 
-  // ── Derived VLAN values ──────────────────────────────────────────────────
+  // ── Derived VLAN and LAN values ──────────────────────────────────────────
   for (const site of sites) {
-    for (const vlan of site.vlans) {
-      if (vlan.subnet) vlan.info = subnetInfo(vlan.subnet.value);
-      const gateway = hostOf(vlan.raw.gateway);
-      if (gateway !== undefined) vlan.gateway = given(gateway);
-      else if (vlan.info && vlan.info.firstUsable !== null) vlan.gateway = derived(vlan.info.firstUsable);
-      vlan.dhcp = resolveDhcp(vlan);
+    for (const net of [...site.vlans, ...site.lans]) {
+      if (net.subnet) net.info = subnetInfo(net.subnet.value);
+      const gateway = hostOf(net.raw.gateway);
+      // A LAN's gateway is its router interface, so an address written there counts as given.
+      const ifaceAddress = net.kind === 'lan' ? findInterface(net.deviceId, net.ifName)?.address : undefined;
+      if (gateway !== undefined) net.gateway = given(gateway);
+      else if (ifaceAddress && !ifaceAddress.auto) net.gateway = given(ifaceAddress.value.ip);
+      else if (net.info && net.info.firstUsable !== null) net.gateway = derived(net.info.firstUsable);
+      net.dhcp = resolveDhcp(net);
     }
   }
 
   // ── Interface addresses that come from elsewhere ─────────────────────────
-  const findInterface = (deviceId: string, ifName: string): RInterface | undefined =>
-    devices.get(deviceId)?.interfaces.find((i) => i.name === ifName);
-
   for (const site of sites) {
-    const wan = site.wan;
-    if (!wan) continue;
-    const iface = findInterface(wan.deviceId, wan.ifName);
-    if (!iface) continue;
-    if (wan.address && !iface.address) {
-      iface.address = given(wan.address);
-      iface.addressSource = 'wan';
-      iface.addressPath = [...wan.path, 'address'];
-    } else if (!wan.address && iface.address) {
-      // The address was written on the interface instead of under `wan`.
-      wan.address = iface.address.value;
-      wan.subnet = toSubnet(iface.address.value);
+    for (const wan of site.wans) {
+      const iface = findInterface(wan.deviceId, wan.ifName);
+      if (!iface) continue;
+      if (wan.address && !iface.address) {
+        iface.address = given(wan.address);
+        iface.addressSource = 'wan';
+        iface.addressPath = [...wan.path, 'address'];
+      } else if (!wan.address && iface.address) {
+        // The address was written on the interface instead of under `wan`.
+        wan.address = iface.address.value;
+        wan.subnet = toSubnet(iface.address.value);
+      }
+      iface.role ??= 'wan';
     }
-    iface.role ??= 'wan';
+    for (const lan of site.lans) {
+      const iface = findInterface(lan.deviceId, lan.ifName);
+      if (!iface) continue;
+      iface.lan ??= lan.id;
+      iface.role ??= 'lan';
+      if (!iface.address && lan.gateway && lan.subnet) {
+        iface.address = {
+          value: { ip: lan.gateway.value, prefix: lan.subnet.value.prefix },
+          auto: lan.gateway.auto || lan.subnet.auto,
+        };
+        iface.addressSource = 'lan-gateway';
+        iface.addressPath = lan.gateway.auto ? lan.path : [...lan.path, 'gateway'];
+      }
+    }
   }
 
   for (const link of links) {
@@ -672,7 +760,7 @@ export function resolve(raw: Netplan, report: Report): ResolvedModel {
       const rawProtected = tunnel.protected?.[side] ?? 'auto';
       const protectedNets: Val<Subnet[]> =
         rawProtected === 'auto'
-          ? derived((site?.vlans ?? []).flatMap((v) => (v.subnet ? [v.subnet.value] : [])))
+          ? derived([...(site?.vlans ?? []), ...(site?.lans ?? [])].flatMap((n) => (n.subnet ? [n.subnet.value] : [])))
           : given(rawProtected.flatMap((text) => {
               const cidr = cidrOf(text);
               return cidr ? [toSubnet(cidr)] : [];
@@ -717,7 +805,77 @@ export function resolve(raw: Netplan, report: Report): ResolvedModel {
     connections: [],
   };
   model.connections = resolveConnections(model);
+  inferDeviceNetworks(model);
   return model;
+}
+
+/** What network the far end of a cable puts a device in. */
+export type EndNetwork = { vlan: number } | { lan: string } | { trunk: true } | undefined;
+
+/** The network at one end of a connection: an access port, a VLAN/LAN interface, or a device that sits in one network. */
+export function networkAt(model: Pick<ResolvedModel, 'devices'>, end: REndpoint): EndNetwork {
+  const device = model.devices.get(end.deviceId);
+  if (!device) return undefined;
+  if (!end.ifName) {
+    if (device.vlan) return { vlan: device.vlan.value };
+    if (device.lan) return { lan: device.lan.value };
+    return undefined;
+  }
+  const ref = lookupRef(model, `${end.deviceId}:${end.ifName}`);
+  if (ref?.iface) {
+    if (ref.iface.lan !== undefined) return { lan: ref.iface.lan };
+    if (ref.iface.vlan !== undefined) return { vlan: ref.iface.vlan };
+    return undefined;
+  }
+  if (ref?.port) {
+    if (ref.port.mode === 'trunk') return { trunk: true };
+    return ref.port.vlan === undefined ? undefined : { vlan: ref.port.vlan };
+  }
+  return undefined;
+}
+
+/** The far ends of every connection that reaches the device itself (not one of its interfaces). */
+export function deviceLevelPeers(model: Pick<ResolvedModel, 'connections'>, deviceId: string): REndpoint[] {
+  const out: REndpoint[] = [];
+  for (const c of model.connections) {
+    if (c.a.deviceId === deviceId && !c.a.ifName) out.push(c.b);
+    if (c.b.deviceId === deviceId && !c.b.ifName) out.push(c.a);
+  }
+  return out;
+}
+
+export const endNetworkKey = (n: EndNetwork): string | undefined =>
+  n === undefined ? undefined : 'vlan' in n ? `vlan:${n.vlan}` : 'lan' in n ? `lan:${n.lan}` : 'trunk';
+
+/**
+ * Unmanaged devices (no ports, no interfaces, not a router) that do not say
+ * which network they are in take it from what they are cabled to. Repeated so
+ * that it follows a chain of unmanaged switches. Ambiguous cases stay unset;
+ * validate.ts explains them.
+ */
+function inferDeviceNetworks(model: ResolvedModel): void {
+  const candidates = [...model.devices.values()].filter(
+    (d) => d.siteId && !d.vlan && !d.lan && d.ports.length === 0 && d.interfaces.length === 0 && !ROUTING_TYPES.has(d.type),
+  );
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const device of candidates) {
+      if (device.vlan || device.lan) continue;
+      const found = new Map<string, EndNetwork>();
+      for (const peer of deviceLevelPeers(model, device.id)) {
+        const network = networkAt(model, peer);
+        const key = endNetworkKey(network);
+        if (key) found.set(key, network);
+      }
+      if (found.size !== 1) continue;
+      const [network] = found.values();
+      if (network && 'vlan' in network) device.vlan = derived(network.vlan);
+      else if (network && 'lan' in network) device.lan = derived(network.lan);
+      else continue;
+      changed = true;
+    }
+  }
 }
 
 /** Physical connections: explicit `link:` cables, `links` entries, and WAN uplinks found by gateway address. */
@@ -748,7 +906,7 @@ function resolveConnections(model: ResolvedModel): RConnection[] {
   }
 
   for (const device of model.devices.values()) {
-    const cable = (fromName: string, target: string | undefined, fromPort?: RPort): void => {
+    const cable = (fromName: string | undefined, target: string | undefined, fromPort?: RPort): void => {
       if (!target) return;
       const ref = lookupRef(model, target);
       if (!ref) return;
@@ -762,19 +920,20 @@ function resolveConnections(model: ResolvedModel): RConnection[] {
     };
     for (const iface of device.interfaces) cable(iface.name, iface.link);
     for (const port of device.ports) cable(port.raw.range, port.link, port);
+    cable(undefined, device.uplink);
   }
 
   // A WAN uplink is drawn to whichever interface owns the gateway address.
   const connected = new Set(connections.flatMap((c) => [keyOf(c.a), keyOf(c.b)]));
-  for (const site of model.sites) {
-    const wan = site.wan;
-    if (!wan || wan.gateway === undefined || !model.devices.has(wan.deviceId)) continue;
+  for (const wan of model.sites.flatMap((s) => s.wans)) {
+    if (wan.gateway === undefined || !model.devices.has(wan.deviceId)) continue;
     if (connected.has(`${wan.deviceId}:${wan.ifName}`)) continue;
     for (const device of model.devices.values()) {
       const peer = device.interfaces.find((i) => i.address?.value.ip === wan.gateway && device.id !== wan.deviceId);
       if (!peer) continue;
       add({
         kind: 'wan',
+        name: wan.name,
         subnet: wan.subnet,
         a: { deviceId: wan.deviceId, ifName: wan.ifName, ip: wan.address?.ip },
         b: { deviceId: device.id, ifName: peer.name, ip: wan.gateway },
@@ -789,8 +948,8 @@ function resolveConnections(model: ResolvedModel): RConnection[] {
 export function peerOf(model: ResolvedModel, deviceId: string, ifName: string): string | undefined {
   for (const c of model.connections) {
     const format = (e: REndpoint): string => (e.ifName ? `${e.deviceId}:${e.ifName}` : e.deviceId);
-    if (c.a.deviceId === deviceId && c.a.ifName === ifName) return format(c.b);
-    if (c.b.deviceId === deviceId && c.b.ifName === ifName) return format(c.a);
+    if (c.a.deviceId === deviceId && (c.a.ifName ?? '') === ifName) return format(c.b);
+    if (c.b.deviceId === deviceId && (c.b.ifName ?? '') === ifName) return format(c.a);
   }
   return undefined;
 }

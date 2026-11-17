@@ -11,7 +11,7 @@ export function freezeYaml(text: string, model: ResolvedModel): string {
   const doc = parseDocument(text);
 
   for (const site of model.sites) {
-    for (const vlan of site.vlans) {
+    for (const vlan of [...site.vlans, ...site.lans]) {
       if (vlan.subnet?.auto) doc.setIn([...vlan.path, 'subnet'], formatSubnet(vlan.subnet.value));
       if (vlan.gateway?.auto) doc.setIn([...vlan.path, 'gateway'], formatIp(vlan.gateway.value));
       const dhcp = vlan.dhcp;
@@ -32,6 +32,8 @@ export function freezeYaml(text: string, model: ResolvedModel): string {
   }
 
   for (const device of model.devices.values()) {
+    if (device.vlan?.auto) doc.setIn([...device.path, 'vlan'], device.vlan.value);
+    if (device.lan?.auto) doc.setIn([...device.path, 'lan'], device.lan.value);
     (device.raw.interfaces ?? []).forEach((iface, index) => {
       if (iface.subinterfaces !== 'auto') return;
       const subs = device.interfaces

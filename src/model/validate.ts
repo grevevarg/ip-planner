@@ -31,7 +31,15 @@ import { SEVERITY, type Diagnostic, type Path, type Report } from './diagnostics
 import { classifyIcon } from './icons';
 import { Locator } from './locate';
 import { parseYaml, type ParseResult } from './parse';
-import { lookupRef, resolve, type RDevice, type ResolvedModel, type RInterface, type RSite, type RVlan } from './resolve';
+import {
+  deviceLevelPeers,
+  endNetworkKey,
+  lookupRef,
+  networkAt,
+  resolve,
+  ROUTING_TYPES,
+  type EndNetwork,
+  type RDevice, type ResolvedModel, type RInterface, type RNetwork, type RSite, type RVlan } from './resolve';
 import schema from './schema.json';
 import type { Netplan } from './types';
 
@@ -107,6 +115,13 @@ export function analyze(text: string): Analysis {
 
 // ── Schema errors ──────────────────────────────────────────────────────────
 
+/** Follows a local `#/$defs/...` reference. */
+function derefSchema(node: Record<string, unknown>): Record<string, unknown> {
+  if (typeof node.$ref !== 'string') return node;
+  const defs = schema.$defs as Record<string, Record<string, unknown>>;
+  return defs[node.$ref.replace('#/$defs/', '')] ?? node;
+}
+
 function pointerToPath(pointer: string, data: unknown): Path {
   const path: Path = [];
   let current: unknown = data;
@@ -125,21 +140,28 @@ function pointerToPath(pointer: string, data: unknown): Path {
 }
 
 function schemaDiagnostics(errors: ErrorObject[], data: unknown, locator: Locator): Diagnostic[] {
-  // A failed `oneOf` also reports why each branch failed. Keep whichever is more
-  // useful: the branch errors when the value is a list (so the bad item is
-  // named), otherwise one summary line.
+  // A failed `oneOf` also reports why each branch failed. When the value has
+  // the shape of exactly one branch (a list, or an object), keep that branch's
+  // errors so the bad item or key is named, and drop the other branches'
+  // "wrong type" complaints. Otherwise keep one summary line.
   const oneOfs = errors.filter((e) => e.keyword === 'oneOf');
   const dropped = new Set<ErrorObject>();
+  const summaries = new Map<ErrorObject, string>();
   for (const oneOf of oneOfs) {
-    const branchPrefix = `${oneOf.schemaPath}/`;
     const nested = errors.filter(
-      (e) => e !== oneOf && e.instancePath.startsWith(oneOf.instancePath) && e.schemaPath.startsWith(branchPrefix),
+      (e) => e !== oneOf && (e.instancePath === oneOf.instancePath || e.instancePath.startsWith(`${oneOf.instancePath}/`)),
     );
-    if (Array.isArray(oneOf.data)) {
+    const branches = ((oneOf.schema ?? []) as Record<string, unknown>[]).map(derefSchema);
+    const shape = Array.isArray(oneOf.data) ? 'array' : typeof oneOf.data === 'object' && oneOf.data !== null ? 'object' : null;
+    if (shape && branches.filter((b) => b.type === shape).length === 1) {
       dropped.add(oneOf);
-      for (const e of nested) if (e.instancePath === oneOf.instancePath) dropped.add(e);
+      const wrongShape = new Set(['type', 'const', 'enum']);
+      for (const e of nested) if (e.instancePath === oneOf.instancePath && wrongShape.has(e.keyword)) dropped.add(e);
     } else {
       for (const e of nested) dropped.add(e);
+      const label = (b: Record<string, unknown>): string =>
+        'const' in b ? `\`${String(b.const)}\`` : b.type === 'array' ? 'a list' : b.type === 'object' ? 'an object' : String(b.type ?? 'value');
+      summaries.set(oneOf, `Must be ${branches.map(label).join(' or ')}`);
     }
   }
 
@@ -172,7 +194,7 @@ function schemaDiagnostics(errors: ErrorObject[], data: unknown, locator: Locato
         message = `Must be ${JSON.stringify(error.params.allowedValue)}`;
         break;
       case 'oneOf':
-        message = 'Must be `auto` or a list';
+        message = summaries.get(error) ?? 'Does not match any allowed form';
         break;
       case 'pattern':
       case 'format': {
@@ -202,10 +224,11 @@ function runChecks(model: ResolvedModel, report: Report): void {
   checkRefs(model, report);
   checkSubnets(model, report);
   checkOverlap(model, report);
-  checkVlanAddresses(model, report);
+  checkNetworkAddresses(model, report);
   checkInterfaceAddresses(model, report);
   checkDuplicateAddresses(model, report);
   checkTrunks(model, report);
+  checkDeviceNetworks(model, report);
   checkTunnels(model, report);
   checkLocked(model, report);
 }
@@ -213,7 +236,8 @@ function runChecks(model: ResolvedModel, report: Report): void {
 const siteOf = (model: ResolvedModel, device: RDevice | undefined): RSite | undefined =>
   device?.siteId ? model.sites.find((s) => s.id === device.siteId) : undefined;
 
-const vlanLabel = (vlan: RVlan): string => `VLAN ${vlan.id} of ${vlan.siteId}`;
+/** VLANs and LANs of a site. */
+const networksOf = (site: RSite): RNetwork[] => [...site.vlans, ...site.lans];
 
 function checkIds(model: ResolvedModel, report: Report): void {
   const owners = new Map<string, { what: string; path: Path }[]>();
@@ -227,6 +251,7 @@ function checkIds(model: ResolvedModel, report: Report): void {
   }
   for (const site of model.sites) {
     claim(site.id, 'site', site.path);
+    for (const lan of site.lans) claim(lan.id, 'LAN', lan.path);
     devices(site.devices);
   }
   for (const link of model.links) claim(link.id, 'link', link.path);
@@ -235,7 +260,7 @@ function checkIds(model: ResolvedModel, report: Report): void {
     if (list.length < 2) continue;
     for (const entry of list) {
       const others = list.filter((o) => o !== entry).map((o) => `a ${o.what}`);
-      report('DUP_ID', `Id "${id}" is used more than once (also by ${others.join(' and ')}). Ids are shared by sites, external groups, devices, links and tunnels`, [...entry.path, 'id']);
+      report('DUP_ID', `Id "${id}" is used more than once (also by ${others.join(' and ')}). Ids are shared by sites, LANs, external groups, devices, links and tunnels`, [...entry.path, 'id']);
     }
   }
 
@@ -288,7 +313,8 @@ function checkRefs(model: ResolvedModel, report: Report): void {
   for (const device of eachDevice) {
     const site = siteOf(model, device);
     const hasVlan = (id: number): boolean => site?.vlans.some((v) => v.id === id) ?? false;
-    const where = site ? `site "${site.id}"` : 'an external group (external devices have no VLANs)';
+    const hasLan = (id: string): boolean => site?.lans.some((l) => l.id === id) ?? false;
+    const where = site ? `site "${site.id}"` : 'an external group (external devices have no VLANs or LANs)';
 
     const iconKind = classifyIcon(device.icon);
     if (iconKind === 'unknown') {
@@ -303,6 +329,12 @@ function checkRefs(model: ResolvedModel, report: Report): void {
       if (iface.vlan !== undefined && !hasVlan(iface.vlan)) {
         report('REF_UNKNOWN', `VLAN ${iface.vlan} is not defined in ${where}`, [...path, 'vlan']);
       }
+      if (iface.lan !== undefined && !hasLan(iface.lan)) {
+        report('REF_UNKNOWN', `LAN "${iface.lan}" is not defined in ${where}`, [...path, 'lan']);
+      }
+      if (iface.vlan !== undefined && iface.lan !== undefined) {
+        report('NETWORK_MISMATCH', `Interface "${iface.name}" names both VLAN ${iface.vlan} and LAN "${iface.lan}"; it can sit in only one network`, [...path, 'lan'], 'error');
+      }
       if (Array.isArray(iface.subinterfaces)) {
         iface.subinterfaces.forEach((sub, si) => {
           if (!hasVlan(sub.vlan)) {
@@ -311,6 +343,16 @@ function checkRefs(model: ResolvedModel, report: Report): void {
         });
       }
     });
+    checkLinkTarget(device.raw.uplink, [...device.path, 'uplink']);
+    if (device.raw.vlan !== undefined && !hasVlan(device.raw.vlan)) {
+      report('REF_UNKNOWN', `VLAN ${device.raw.vlan} is not defined in ${where}`, [...device.path, 'vlan']);
+    }
+    if (device.raw.lan !== undefined && !hasLan(device.raw.lan)) {
+      report('REF_UNKNOWN', `LAN "${device.raw.lan}" is not defined in ${where}`, [...device.path, 'lan']);
+    }
+    if (device.raw.vlan !== undefined && device.raw.lan !== undefined) {
+      report('NETWORK_MISMATCH', `Device "${device.id}" names both VLAN ${device.raw.vlan} and LAN "${device.raw.lan}"; it can sit in only one network`, [...device.path, 'lan'], 'error');
+    }
     for (const port of device.ports) {
       checkLinkTarget(port.link, [...port.path, 'link']);
       if (port.mode === 'access' && port.vlan !== undefined && !hasVlan(port.vlan)) {
@@ -320,19 +362,44 @@ function checkRefs(model: ResolvedModel, report: Report): void {
   }
 
   for (const site of model.sites) {
-    if (site.wan) {
-      const device = model.devices.get(site.wan.deviceId);
+    const attached = [
+      ...site.wans.map((wan) => ({ what: 'WAN', ...wan })),
+      ...site.lans.map((lan) => ({ what: 'LAN', ...lan })),
+    ];
+    for (const { what, deviceId, ifName, path } of attached) {
+      const device = model.devices.get(deviceId);
       if (!device || device.siteId !== site.id) {
-        report('REF_UNKNOWN', `WAN device "${site.wan.deviceId}" is not a device of site "${site.id}"`, [...site.wan.path, 'device']);
-      } else if (!device.interfaces.some((i) => i.name === site.wan!.ifName)) {
-        report('REF_UNKNOWN', `Device "${device.id}" has no interface "${site.wan.ifName}"`, [...site.wan.path, 'interface']);
+        report('REF_UNKNOWN', `${what} device "${deviceId}" is not a device of site "${site.id}"`, [...path, 'device']);
+      } else if (!device.interfaces.some((i) => i.name === ifName)) {
+        report('REF_UNKNOWN', `Device "${device.id}" has no interface "${ifName}". List it under the device's \`interfaces\``, [...path, 'interface']);
       }
     }
-    for (const vlan of site.vlans) {
-      const on = vlan.dhcp?.on;
+    for (const net of networksOf(site)) {
+      const on = net.dhcp?.on;
       if (on !== undefined && !model.devices.has(on)) {
-        report('REF_UNKNOWN', `DHCP server device "${on}" does not exist`, [...vlan.path, 'dhcp', 'on']);
+        report('REF_UNKNOWN', `DHCP server device "${on}" does not exist`, [...net.path, 'dhcp', 'on']);
       }
+    }
+  }
+
+  // A physical interface can be one WAN uplink, one LAN or one end of one link.
+  const users = new Map<string, { what: string; path: Path }[]>();
+  const use = (deviceId: string, ifName: string, what: string, path: Path): void => {
+    const key = `${deviceId}:${ifName}`;
+    users.set(key, [...(users.get(key) ?? []), { what, path }]);
+  };
+  for (const site of model.sites) {
+    site.wans.forEach((wan) => use(wan.deviceId, wan.ifName, `a WAN uplink of site "${site.id}"`, [...wan.path, 'interface']));
+    site.lans.forEach((lan) => use(lan.deviceId, lan.ifName, `LAN "${lan.id}"`, [...lan.path, 'interface']));
+  }
+  for (const link of model.links) {
+    for (const side of ['a', 'b'] as const) use(link[side].deviceId, link[side].ifName, `link "${link.id}"`, [...link[side].path, 'endpoint']);
+  }
+  for (const [key, list] of users) {
+    if (list.length < 2) continue;
+    for (const entry of list) {
+      const others = list.filter((o) => o !== entry).map((o) => o.what);
+      report('ADDR_CONFLICT', `Interface ${key} is also used by ${others.join(' and ')}. Each WAN uplink, LAN and link needs its own interface`, entry.path);
     }
   }
 
@@ -378,15 +445,15 @@ function checkSubnets(model: ResolvedModel, report: Report): void {
   networkAddress(model.raw.transit_pool, ['transit_pool'], 'transit_pool');
   for (const site of model.sites) {
     networkAddress(site.raw.supernet, [...site.path, 'supernet'], 'Supernet');
-    for (const vlan of site.vlans) {
+    for (const vlan of networksOf(site)) {
       const subnetPath = [...vlan.path, 'subnet'];
       networkAddress(vlan.raw.subnet, subnetPath, 'Subnet');
       if (!vlan.subnet || !vlan.info) continue;
       const text = formatSubnet(vlan.subnet.value);
       if (vlan.raw.hosts !== undefined && vlan.raw.hosts > vlan.info.usable) {
-        report('TOO_SMALL', `${text} has ${vlan.info.usable} usable addresses but VLAN ${vlan.id} needs ${vlan.raw.hosts} hosts`, vlan.subnet.auto ? [...vlan.path, 'hosts'] : subnetPath);
+        report('TOO_SMALL', `${text} has ${vlan.info.usable} usable addresses but ${vlan.title} needs ${vlan.raw.hosts} hosts`, vlan.subnet.auto ? [...vlan.path, 'hosts'] : subnetPath);
       } else if (vlan.info.usable < 2) {
-        report('TOO_SMALL', `${text} has no room for a gateway and a host; a VLAN needs at least a /30`, subnetPath);
+        report('TOO_SMALL', `${text} has no room for a gateway and a host; a ${vlan.kind === 'vlan' ? 'VLAN' : 'LAN'} needs at least a /30`, subnetPath);
       }
       if (!vlan.subnet.auto && site.supernet && !containsSubnet(site.supernet, vlan.subnet.value)) {
         report('OUTSIDE_SUPERNET', `${text} is not inside the supernet ${formatSubnet(site.supernet)} of site "${site.id}"`, subnetPath);
@@ -429,9 +496,9 @@ interface SubnetEntity {
 function collectSubnets(model: ResolvedModel): SubnetEntity[] {
   const declared: SubnetEntity[] = [];
   for (const site of model.sites) {
-    for (const vlan of site.vlans) {
+    for (const vlan of networksOf(site)) {
       if (!vlan.subnet) continue;
-      declared.push({ subnet: vlan.subnet.value, label: vlanLabel(vlan), path: vlan.subnet.auto ? vlan.path : [...vlan.path, 'subnet'] });
+      declared.push({ subnet: vlan.subnet.value, label: vlan.label, path: vlan.subnet.auto ? vlan.path : [...vlan.path, 'subnet'] });
     }
   }
   for (const link of model.links) {
@@ -444,8 +511,8 @@ function collectSubnets(model: ResolvedModel): SubnetEntity[] {
   const segments = new Map<string, SubnetEntity>();
   for (const device of model.devices.values()) {
     for (const iface of device.interfaces) {
-      // Membership of these is checked against the VLAN or link they belong to.
-      if (!iface.address || iface.vlan !== undefined || iface.linkId !== undefined) continue;
+      // Membership of these is checked against the VLAN, LAN or link they belong to.
+      if (!iface.address || iface.vlan !== undefined || iface.lan !== undefined || iface.linkId !== undefined) continue;
       const subnet = toSubnet(iface.address.value);
       if (declared.some((d) => sameSubnet(d.subnet, subnet))) continue;
       const key = formatSubnet(subnet);
@@ -491,16 +558,16 @@ function checkPrefix(report: Report, text: string | undefined, subnet: Subnet, w
   }
 }
 
-function checkVlanAddresses(model: ResolvedModel, report: Report): void {
+function checkNetworkAddresses(model: ResolvedModel, report: Report): void {
   for (const site of model.sites) {
     const siteSubnets = [
-      ...site.vlans.flatMap((v) => (v.subnet ? [v.subnet.value] : [])),
+      ...networksOf(site).flatMap((v) => (v.subnet ? [v.subnet.value] : [])),
       ...site.devices.flatMap((d) => d.interfaces.flatMap((i) => (i.address ? [toSubnet(i.address.value)] : []))),
     ];
-    for (const vlan of site.vlans) {
+    for (const vlan of networksOf(site)) {
       const subnet = vlan.subnet?.value;
       if (!subnet) continue;
-      const where = vlanLabel(vlan);
+      const where = vlan.label;
 
       if (vlan.gateway && !vlan.gateway.auto) {
         const path = [...vlan.path, 'gateway'];
@@ -547,7 +614,7 @@ function checkVlanAddresses(model: ResolvedModel, report: Report): void {
       }
       if (dhcp.mode === 'relay') {
         if (dhcp.server === undefined) {
-          report('DHCP_RELAY_UNREACHABLE', `VLAN ${vlan.id} uses \`mode: relay\` but no \`server\` address is given`, [...dhcpPath, 'mode']);
+          report('DHCP_RELAY_UNREACHABLE', `${vlan.title} uses \`mode: relay\` but no \`server\` address is given`, [...dhcpPath, 'mode']);
         } else if (!siteSubnets.some((s) => contains(s, dhcp.server!))) {
           report('DHCP_RELAY_UNREACHABLE', `DHCP relay server ${formatIp(dhcp.server)} is not inside any subnet of site "${site.id}"`, [...dhcpPath, 'server']);
         }
@@ -566,13 +633,20 @@ function checkInterfaceAddresses(model: ResolvedModel, report: Report): void {
       const text = formatCidr(iface.address.value);
       const name = `${device.id}:${iface.name}`;
 
-      const vlan = iface.vlan === undefined ? undefined : site?.vlans.find((v) => v.id === iface.vlan);
+      const vlan: RNetwork | undefined =
+        iface.vlan !== undefined
+          ? site?.vlans.find((v) => v.id === iface.vlan)
+          : iface.lan !== undefined
+            ? site?.lans.find((l) => l.id === iface.lan)
+            : undefined;
       if (vlan?.subnet) {
-        // The gateway itself was already checked on the VLAN.
-        if (iface.addressSource !== 'vlan-gateway') {
-          const ok = checkHostAddress(report, ip, vlan.subnet.value, `Address of ${name}`, vlanLabel(vlan), iface.addressPath);
+        // The gateway itself was already checked on the VLAN or LAN. An address that comes from a
+        // WAN or link means the interface is double-booked, which ADDR_CONFLICT already reports.
+        const fromElsewhere = ['vlan-gateway', 'lan-gateway', 'wan', 'link'].includes(iface.addressSource ?? '');
+        if (!fromElsewhere) {
+          const ok = checkHostAddress(report, ip, vlan.subnet.value, `Address of ${name}`, vlan.label, iface.addressPath);
           if (ok && prefix !== vlan.subnet.value.prefix) {
-            report('ADDR_NOT_IN_SUBNET', `Address ${text} of ${name} has prefix /${prefix}, but ${vlanLabel(vlan)} is ${formatSubnet(vlan.subnet.value)}`, iface.addressPath);
+            report('ADDR_NOT_IN_SUBNET', `Address ${text} of ${name} has prefix /${prefix}, but ${vlan.label} is ${formatSubnet(vlan.subnet.value)}`, iface.addressPath);
           }
         }
       } else if (iface.addressSource === 'interface' || iface.addressSource === 'wan' || iface.addressSource === 'subinterface') {
@@ -585,15 +659,21 @@ function checkInterfaceAddresses(model: ResolvedModel, report: Report): void {
   }
 
   for (const site of model.sites) {
-    const wan = site.wan;
-    if (!wan) continue;
-    const iface = model.devices.get(wan.deviceId)?.interfaces.find((i) => i.name === wan.ifName);
-    const rawIface = model.devices.get(wan.deviceId)?.raw.interfaces?.find((i) => i.name === wan.ifName);
-    if (iface && rawIface?.address && site.raw.wan?.address && rawIface.address !== site.raw.wan.address) {
-      report('ADDR_CONFLICT', `WAN address ${site.raw.wan.address} differs from the address ${rawIface.address} written on ${wan.deviceId}:${wan.ifName}`, [...wan.path, 'address']);
+    for (const wan of site.wans) {
+      const rawIface = model.devices.get(wan.deviceId)?.raw.interfaces?.find((i) => i.name === wan.ifName);
+      if (rawIface?.address && wan.raw.address && rawIface.address !== wan.raw.address) {
+        report('ADDR_CONFLICT', `WAN address ${wan.raw.address} differs from the address ${rawIface.address} written on ${wan.deviceId}:${wan.ifName}`, [...wan.path, 'address']);
+      }
+      if (wan.gateway !== undefined && wan.subnet) {
+        checkHostAddress(report, wan.gateway, wan.subnet, 'WAN gateway', `WAN of site "${site.id}"`, [...wan.path, 'gateway']);
+      }
     }
-    if (wan.gateway !== undefined && wan.subnet) {
-      checkHostAddress(report, wan.gateway, wan.subnet, 'WAN gateway', `WAN of site "${site.id}"`, [...wan.path, 'gateway']);
+    for (const lan of site.lans) {
+      const rawIface = model.devices.get(lan.deviceId)?.raw.interfaces?.find((i) => i.name === lan.ifName);
+      const own = rawIface?.address ? parseCidr(rawIface.address) : null;
+      if (own && lan.gateway && !lan.gateway.auto && own.ip !== lan.gateway.value) {
+        report('ADDR_CONFLICT', `LAN gateway ${formatIp(lan.gateway.value)} differs from the address ${rawIface!.address} written on ${lan.deviceId}:${lan.ifName}, which is the gateway. Remove one of them`, [...lan.path, 'gateway']);
+      }
     }
   }
 
@@ -647,9 +727,9 @@ function checkDuplicateAddresses(model: ResolvedModel, report: Report): void {
     }
   }
   for (const site of model.sites) {
-    for (const vlan of site.vlans) {
+    for (const vlan of networksOf(site)) {
       if (vlan.gateway) {
-        all.push({ ip: vlan.gateway.value, kind: 'gateway', label: `the gateway of ${vlanLabel(vlan)}`, path: vlan.gateway.auto ? vlan.path : [...vlan.path, 'gateway'] });
+        all.push({ ip: vlan.gateway.value, kind: 'gateway', label: `the gateway of ${vlan.label}`, path: vlan.gateway.auto ? vlan.path : [...vlan.path, 'gateway'] });
       }
       for (const entry of vlan.statics) {
         all.push({ ip: entry.ip, kind: 'static', label: `static "${entry.name}"`, path: [...entry.path, 'ip'], staticName: entry.name });
@@ -687,7 +767,6 @@ function checkDuplicateAddresses(model: ResolvedModel, report: Report): void {
   }
 }
 
-const ROUTING_TYPES = new Set(['router', 'l3switch', 'firewall']);
 
 function checkTrunks(model: ResolvedModel, report: Report): void {
   for (const site of model.sites) {
@@ -737,6 +816,59 @@ function checkTrunks(model: ResolvedModel, report: Report): void {
   }
 }
 
+/** Unmanaged devices: the network they say they are in must match what they are cabled to. */
+function checkDeviceNetworks(model: ResolvedModel, report: Report): void {
+  const describe = (site: RSite | undefined, n: EndNetwork): string => {
+    if (n === undefined) return 'no network';
+    if ('vlan' in n) return `VLAN ${n.vlan}`;
+    if ('lan' in n) return `LAN "${site?.lans.find((l) => l.id === n.lan)?.name ?? n.lan}"`;
+    return 'a trunk';
+  };
+  const refText = (end: { deviceId: string; ifName?: string }): string => (end.ifName ? `${end.deviceId}:${end.ifName}` : end.deviceId);
+
+  for (const device of model.devices.values()) {
+    const site = siteOf(model, device);
+    if (!site) continue;
+    const field = device.raw.vlan !== undefined ? 'vlan' : device.raw.lan !== undefined ? 'lan' : undefined;
+    if (field && (device.ports.length || ROUTING_TYPES.has(device.type))) {
+      const why = device.ports.length ? 'its ports set their own VLANs' : `a ${device.type} routes between networks`;
+      report('NETWORK_MISMATCH', `\`${field}\` on a device is for unmanaged devices, but ${why}. Remove it`, [...device.path, field]);
+      continue;
+    }
+
+    const own: EndNetwork = device.vlan ? { vlan: device.vlan.value } : device.lan ? { lan: device.lan.value } : undefined;
+    const peers = deviceLevelPeers(model, device.id);
+    const path = field ? [...device.path, field] : device.raw.uplink ? [...device.path, 'uplink'] : device.path;
+
+    if (!own) {
+      // Only devices that could have been inferred and were not: cabled to several networks.
+      if (device.ports.length || device.interfaces.length || ROUTING_TYPES.has(device.type)) continue;
+      const seen = new Map<string, string>();
+      for (const peer of peers) {
+        const n = networkAt(model, peer);
+        const key = endNetworkKey(n);
+        if (key && key !== 'trunk') seen.set(key, `${describe(site, n)} (${refText(peer)})`);
+      }
+      if (seen.size > 1) {
+        report('NETWORK_MISMATCH', `Device "${device.id}" is cabled into more than one network: ${[...seen.values()].join(', ')}. An unmanaged device passes everything through, so these would be one broadcast domain`, path);
+      }
+    }
+
+    for (const peer of peers) {
+      const n = networkAt(model, peer);
+      const peerDevice = model.devices.get(peer.deviceId);
+      if (n && 'trunk' in n) {
+        report('NETWORK_MISMATCH', `Device "${device.id}" is cabled to trunk port ${refText(peer)}. An unmanaged device needs an access port in one VLAN`, path);
+      } else if (own && n && endNetworkKey(n) !== endNetworkKey(own)) {
+        report('NETWORK_MISMATCH', `Device "${device.id}" is in ${describe(site, own)}, but it is cabled to ${refText(peer)}, which is in ${describe(site, n)}`, path);
+      } else if (own && !n && peer.ifName && peerDevice && ROUTING_TYPES.has(peerDevice.type)) {
+        const hint = 'vlan' in own ? '. A VLAN reaches a router over a trunk; for a network straight on a router port, use a LAN' : '';
+        report('NETWORK_MISMATCH', `Device "${device.id}" is in ${describe(site, own)}, but it is cabled to router port ${refText(peer)}, which is in no VLAN or LAN${hint}`, path);
+      }
+    }
+  }
+}
+
 function checkTunnels(model: ResolvedModel, report: Report): void {
   for (const tunnel of model.tunnels) {
     const needsSubnet = tunnel.type !== 'ipsec-policy';
@@ -757,7 +889,7 @@ function checkTunnels(model: ResolvedModel, report: Report): void {
         continue;
       }
       const site = siteOf(model, device);
-      const isWan = site?.wan?.deviceId === device.id && site.wan.ifName === iface.name;
+      const isWan = site?.wans.some((w) => w.deviceId === device.id && w.ifName === iface.name) ?? false;
       if (!isWan && iface.role !== 'wan' && iface.linkId === undefined) {
         report('TUNNEL_PEER', `Underlay interface ${device.id}:${iface.name} is neither a WAN interface nor the end of a link; tunnels should be sourced from a public/WAN address`, path, 'warning');
       }
@@ -799,6 +931,7 @@ function lockableObjects(model: ResolvedModel): Map<string, Lockable> {
     add(site.id, site);
     for (const device of site.devices) add(device.id, device);
     for (const vlan of site.vlans) add(`${site.id}:${vlan.id}`, vlan);
+    for (const lan of site.lans) add(lan.id, lan);
   }
   for (const link of model.links) add(link.id, link);
   for (const tunnel of model.tunnels) add(tunnel.id, tunnel);

@@ -563,7 +563,7 @@ sites:
 `;
     const analysis = analyze(yaml);
     expect(analysis.diagnostics).toEqual([]);
-    expect(formatSubnet(analysis.model!.sites[0].wan!.subnet!)).toBe('198.51.100.0/30');
+    expect(formatSubnet(analysis.model!.sites[0].wans[0].subnet!)).toBe('198.51.100.0/30');
   });
 });
 
@@ -864,23 +864,25 @@ describe('freezeYaml', () => {
     const frozenText = freezeYaml(text, before.model!);
     const after = analyze(frozenText);
     expect(after.diagnostics).toEqual([]);
-    expect(frozenText).toContain('# Illustrative: LinkyAB is not the real site from the assignment.');
+    expect(frozenText).toContain('# Unmanaged switches have no ports to configure.');
 
     const snapshot = (analysis: typeof before): unknown =>
       analysis.model!.sites.map((s) => ({
-        vlans: s.vlans.map((v) => [v.id, formatSubnet(v.subnet!.value), formatIp(v.gateway!.value), v.dhcp?.size, v.dhcp?.effective]),
+        vlans: [...s.vlans, ...s.lans].map((v) => [v.id, formatSubnet(v.subnet!.value), formatIp(v.gateway!.value), v.dhcp?.size, v.dhcp?.effective]),
+        networks: s.devices.map((d) => [d.id, d.vlan?.value, d.lan?.value]),
         interfaces: s.devices.flatMap((d) => d.interfaces.map((i) => [d.id, i.name, i.address?.value])),
       }));
     expect(snapshot(after)).toEqual(snapshot(before));
 
     const model = after.model!;
     for (const site of model.sites) {
-      for (const vlan of site.vlans) {
+      for (const vlan of [...site.vlans, ...site.lans]) {
         expect(vlan.subnet!.auto).toBe(false);
         expect(vlan.gateway!.auto).toBe(false);
         if (vlan.dhcp?.pool) expect(vlan.dhcp.pool.auto).toBe(false);
       }
       for (const device of site.devices) {
+        expect([device.vlan?.auto, device.lan?.auto]).not.toContain(true);
         for (const iface of device.interfaces) if (iface.address) expect(iface.address.auto).toBe(false);
       }
     }
@@ -906,5 +908,298 @@ sites:
     expect(after.diagnostics).toEqual([]);
     expect(after.model!.sites[0].vlans[0].dhcp!.size).toBe(before.model!.sites[0].vlans[0].dhcp!.size);
     expect(after.model!.sites[0].vlans[0].raw.dhcp!.exclude).toEqual(['10.1.0.9']);
+  });
+});
+
+describe('LANs and WAN lists', () => {
+  /** VLANs on a trunk, plus two untagged LANs straight on router ports. */
+  const lanSite = (extra: { lans?: string; r1?: string; devices?: string } = {}): string => `version: 1
+sites:
+  - id: bakery
+    supernet: 10.30.0.0/24
+    vlans:
+      - { id: 100, name: Sales, hosts: 10 }
+      - { id: 200, name: Support, hosts: 20 }
+    lans:
+${extra.lans ?? `      - { id: wifi, name: Wifi, device: r1, interface: f2/0, hosts: 50, dhcp: { mode: server, on: r1 } }
+      - id: it
+        name: Office
+        device: r1
+        interface: f1/1
+        hosts: 15
+        static:
+          - { name: www, ip: 10.30.0.110, role: webserver }`}
+    devices:
+      - id: r1
+        type: router
+        interfaces:
+          - { name: f1/0, role: trunk, subinterfaces: auto }
+          - { name: f1/1 }
+          - { name: f2/0 }
+${extra.r1 ?? ''}
+${extra.devices ?? ''}
+`;
+
+  it('addresses the router port itself and creates no sub-interfaces for LANs', () => {
+    const analysis = analyze(lanSite());
+    expect(analysis.diagnostics).toEqual([]);
+    const site = analysis.model!.sites[0];
+    const subnets = Object.fromEntries([...site.vlans, ...site.lans].map((n) => [n.name, formatSubnet(n.subnet!.value)]));
+    // Largest first across VLANs and LANs: Wifi /26, the /27s (VLANs by id, then LANs), then Sales' /28.
+    expect(subnets).toEqual({ Wifi: '10.30.0.0/26', Support: '10.30.0.64/27', Office: '10.30.0.96/27', Sales: '10.30.0.128/28' });
+    const r1 = analysis.model!.devices.get('r1')!;
+    expect(r1.interfaces.map((i) => i.name)).toEqual(['f1/0', 'f1/0.100', 'f1/0.200', 'f1/1', 'f2/0']);
+    const f20 = r1.interfaces.find((i) => i.name === 'f2/0')!;
+    expect(f20).toMatchObject({ lan: 'wifi', role: 'lan', addressSource: 'lan-gateway' });
+    expect(`${formatIp(f20.address!.value.ip)}/${f20.address!.value.prefix}`).toBe('10.30.0.1/26');
+    expect(f20.address!.auto).toBe(true);
+  });
+
+  it('takes subnet and gateway from an address written on the interface', () => {
+    const yaml = lanSite({ lans: '      - { id: it, device: r1, interface: f1/1, hosts: 15 }' }).replace('{ name: f1/1 }', '{ name: f1/1, address: 10.30.0.161/27 }');
+    const analysis = analyze(yaml);
+    expect(analysis.diagnostics).toEqual([]);
+    const lan = analysis.model!.sites[0].lans[0];
+    expect([formatSubnet(lan.subnet!.value), formatIp(lan.gateway!.value), lan.subnet!.auto, lan.gateway!.auto]).toEqual(['10.30.0.160/27', '10.30.0.161', false, false]);
+  });
+
+  it('reports a LAN gateway that disagrees with the interface address', () => {
+    const yaml = lanSite({ lans: '      - { id: it, device: r1, interface: f1/1, subnet: 10.30.0.160/27, gateway: 10.30.0.190 }   # <1>' }).replace(
+      '{ name: f1/1 }',
+      '{ name: f1/1, address: 10.30.0.161/27 }',
+    );
+    expect(found(yaml)).toEqual([`ADDR_CONFLICT@${at(yaml, 1)}`]);
+  });
+
+  it('checks LAN references and membership', () => {
+    const yaml = lanSite({
+      lans: `      - { id: it, device: r1, interface: f9/9, hosts: 15 }   # <1>
+      - { id: lab, device: elsewhere, interface: f0/0, hosts: 5 }   # <2>`,
+      devices: `      - id: srv
+        type: server
+        interfaces:
+          - { name: eth0, lan: nope }   # <3>
+          - { name: eth1, lan: it, vlan: 100 }   # <4>`,
+    });
+    expect(found(yaml)).toEqual([
+      `REF_UNKNOWN@${at(yaml, 1)}`,
+      `REF_UNKNOWN@${at(yaml, 2)}`,
+      `REF_UNKNOWN@${at(yaml, 3)}`,
+      `NETWORK_MISMATCH@${at(yaml, 4)}`,
+    ]);
+  });
+
+  it('checks host and static addresses against the LAN subnet', () => {
+    const yaml = lanSite({
+      lans: `      - id: it
+        device: r1
+        interface: f1/1
+        subnet: 10.30.0.64/27
+        static:
+          - { name: www, ip: 10.30.0.200 }   # <1>`,
+      devices: `      - id: srv
+        type: server
+        interfaces:
+          - { name: eth0, lan: it, address: 10.30.0.70/27 }
+          - { name: eth1, lan: it, address: 10.30.0.130/27 }   # <2>`,
+    });
+    expect(found(yaml)).toEqual([`ADDR_NOT_IN_SUBNET@${at(yaml, 1)}`, `ADDR_NOT_IN_SUBNET@${at(yaml, 2)}`]);
+  });
+
+  it('shares ids with everything else and gives LAN gateways to duplicate checks', () => {
+    const yaml = lanSite({
+      lans: `      - { id: r1, device: r1, interface: f1/1, subnet: 10.30.0.64/27 }   # <1>`,
+      devices: `      - id: srv
+        type: server
+        interfaces:
+          - { name: eth0, lan: r1, address: 10.30.0.65/27 }   # <2>`,
+    });
+    const codes = found(yaml);
+    expect(codes).toContain(`DUP_ID@${at(yaml, 1)}`);
+    expect(codes).toContain(`ADDR_DUP@${at(yaml, 2)}`);
+  });
+
+  it('does not let a WAN, a LAN and a link share one interface', () => {
+    const yaml = `version: 1
+sites:
+  - id: a
+    supernet: 10.1.0.0/16
+    wan: { device: r1, interface: f0/0, address: 198.51.100.2/30 }   # <1>
+    lans:
+      - { id: office, device: r1, interface: f0/0, hosts: 10 }   # <2>
+    devices:
+      - { id: r1, type: router, interfaces: [{ name: f0/0 }] }
+`;
+    expect(found(yaml)).toEqual([`ADDR_CONFLICT@${at(yaml, 1)}`, `ADDR_CONFLICT@${at(yaml, 2)}`]);
+  });
+
+  it('accepts a list of WAN uplinks and connects each to its provider', () => {
+    const yaml = `version: 1
+external:
+  - id: isps
+    devices:
+      - { id: isp-a, type: router, interfaces: [{ name: f0/0, address: 198.51.100.1/30 }] }
+      - { id: isp-b, type: router, interfaces: [{ name: f0/0, address: 203.0.113.1/30 }] }
+sites:
+  - id: a
+    supernet: 10.1.0.0/16
+    wan:
+      - { name: Primary, device: r1, interface: f0/0, address: 198.51.100.2/30, gateway: 198.51.100.1, nat: true }
+      - { name: Backup, device: r1, interface: f0/1, address: 203.0.113.2/30, gateway: 203.0.113.1 }
+    devices:
+      - { id: r1, type: router, interfaces: [{ name: f0/0 }, { name: f0/1 }] }
+  - id: b
+    supernet: 10.2.0.0/16
+    devices:
+      - { id: r2, type: router, interfaces: [{ name: f0/0, address: 192.0.2.2/30 }] }
+tunnels:
+  - { id: t, type: ipsec-policy, a: { device: r1, underlay: f0/1 }, b: { device: r2, underlay: f0/0 } }
+`;
+    const analysis = analyze(yaml);
+    // Only the tunnel's far end (not a WAN) is warned about; the backup uplink counts as WAN.
+    expect(analysis.diagnostics.map((d) => [d.code, d.message.includes('r2:f0/0')])).toEqual([['TUNNEL_PEER', true]]);
+    const site = analysis.model!.sites[0];
+    expect(site.wans.map((w) => [w.name, w.path])).toEqual([
+      ['Primary', ['sites', 0, 'wan', 0]],
+      ['Backup', ['sites', 0, 'wan', 1]],
+    ]);
+    const wanLinks = analysis.model!.connections.filter((c) => c.kind === 'wan').map((c) => [c.name, c.a.ifName, c.b.deviceId]);
+    expect(wanLinks).toEqual([
+      ['Primary', 'f0/0', 'isp-a'],
+      ['Backup', 'f0/1', 'isp-b'],
+    ]);
+  });
+
+  it('names the bad key or item of a malformed wan instead of a generic oneOf message', () => {
+    const base = 'version: 1\nsites:\n  - id: a\n    supernet: 10.0.0.0/8\n';
+    const messages = (wan: string): string[] => analyze(`${base}${wan}`).diagnostics.map((d) => d.message);
+    expect(messages('    wan: { device: r1, interface: f0/0, adress: 1.2.3.4/30 }\n')).toEqual(['Unknown property `adress`']);
+    expect(messages('    wan:\n      - { device: r1, interface: f0/0 }\n      - { device: r1 }\n')).toEqual(['Missing required property `interface`']);
+    expect(messages('    wan: r1\n')).toEqual(['Must be an object or a list']);
+  });
+
+  it('protects LAN subnets through tunnels, freezes LAN values and locks LANs by id', () => {
+    const yaml = lanSite({
+      lans: `      - { id: it, name: Office, device: r1, interface: f1/1, hosts: 15, locked: true }   # <1>`,
+    }).replace(
+      'version: 1\n',
+      `version: 1
+locked_baseline:
+  it: { id: it, name: Office, device: r1, interface: f1/1, hosts: 14 }
+`,
+    );
+    const analysis = analyze(yaml);
+    expect(analysis.diagnostics.map((d) => d.code)).toEqual(['LOCKED_CHANGED']);
+
+    const frozen = analyze(freezeYaml(yaml, analysis.model!));
+    const lan = frozen.model!.sites[0].lans[0];
+    expect([lan.subnet!.auto, lan.gateway!.auto, formatSubnet(lan.subnet!.value)]).toEqual([false, false, '10.30.0.32/27']);
+  });
+
+  it('includes LAN subnets in auto-protected tunnel networks', () => {
+    const yaml = lanSite({ r1: '          - { name: f0/0, address: 198.51.100.2/30, role: wan }' }) +
+      `  - id: other
+    supernet: 10.9.0.0/16
+    devices:
+      - { id: r9, type: router, interfaces: [{ name: f0/0, address: 198.51.100.6/30, role: wan }] }
+tunnels:
+  - { id: t, type: ipsec-policy, a: { device: r1, underlay: f0/0 }, b: { device: r9, underlay: f0/0 } }
+`;
+    const tunnel = analyze(yaml).model!.tunnels[0];
+    expect(tunnel.a.protected.value.map(formatSubnet)).toEqual(['10.30.0.128/28', '10.30.0.64/27', '10.30.0.0/26', '10.30.0.96/27']);
+  });
+});
+
+describe('unmanaged devices', () => {
+  /** One VLAN site (managed switch on a trunk) plus one LAN on a router port; `devices` is spliced in. */
+  const site = (devices: string): string => `version: 1
+sites:
+  - id: a
+    supernet: 10.1.0.0/16
+    vlans:
+      - { id: 10, hosts: 20 }
+      - { id: 20, hosts: 20 }
+    lans:
+      - { id: office, device: r1, interface: f2/0, hosts: 10 }
+    devices:
+      - id: r1
+        type: router
+        interfaces:
+          - { name: f1/0, role: trunk, subinterfaces: auto }
+          - { name: f2/0 }
+          - { name: f3/0 }
+      - id: sw1
+        type: switch
+        ports:
+          - { range: g0/1, mode: trunk, link: r1:f1/0 }
+          - { range: f0/1, mode: access, vlan: 10 }
+          - { range: f0/2, mode: access, vlan: 20 }
+${devices}
+`;
+  const networks = (yaml: string): Record<string, unknown> =>
+    Object.fromEntries(
+      [...analyze(yaml).model!.devices.values()]
+        .filter((d) => d.vlan || d.lan)
+        .map((d) => [d.id, d.vlan ? [d.vlan.value, d.vlan.auto] : [d.lan!.value, d.lan!.auto]]),
+    );
+
+  it('infers the network from the access port or LAN port, also along a chain', () => {
+    const yaml = site(`      - { id: u10, type: switch, uplink: sw1:f0/1 }
+      - { id: u10b, type: switch, uplink: u10 }
+      - { id: uoffice, type: switch, uplink: r1:f2/0 }
+      - { id: u20, type: switch, vlan: 20, uplink: sw1:f0/2 }`);
+    expect(found(yaml)).toEqual([]);
+    expect(networks(yaml)).toEqual({ u10: [10, true], u10b: [10, true], uoffice: ['office', true], u20: [20, false] });
+  });
+
+  it('accepts hosts that link to the switch by its id', () => {
+    const yaml = site(`      - { id: u10, type: switch, uplink: sw1:f0/1 }
+      - id: pc
+        type: pc
+        interfaces:
+          - { name: eth0, vlan: 10, link: u10 }`);
+    expect(found(yaml)).toEqual([]);
+    expect(analyze(yaml).model!.connections.filter((c) => c.a.deviceId === 'pc' || c.b.deviceId === 'pc')).toHaveLength(1);
+  });
+
+  it('warns when the written network differs from the port, or the port is a trunk or a bare router port', () => {
+    const yaml = site(`      - { id: u1, type: switch, vlan: 20, uplink: sw1:f0/1 }   # <1>
+      - { id: u2, type: switch, uplink: sw1:g0/1 }   # <2>
+      - { id: u3, type: switch, vlan: 10, uplink: r1:f3/0 }   # <3>
+      - { id: u4, type: switch, lan: office, uplink: r1:f2/0 }`);
+    expect(found(yaml)).toEqual([`NETWORK_MISMATCH@${at(yaml, 1)}`, `NETWORK_MISMATCH@${at(yaml, 2)}`, `NETWORK_MISMATCH@${at(yaml, 3)}`]);
+    expect(severityOf(yaml, 'NETWORK_MISMATCH')).toBe('warning');
+    expect(analyze(yaml).diagnostics[2].message).toContain('use a LAN');
+  });
+
+  it('warns about a switch cabled into two networks and leaves it uninferred', () => {
+    const yaml = site(`      - id: u1   # <1>
+        type: switch
+      - id: pc10
+        type: pc
+        interfaces: [{ name: eth0, vlan: 10, link: u1 }]
+      - id: pc20
+        type: pc
+        interfaces: [{ name: eth0, vlan: 20, link: u1 }]`);
+    expect(found(yaml)).toEqual([`NETWORK_MISMATCH@${at(yaml, 1)}`]);
+    expect(networks(yaml)).toEqual({});
+  });
+
+  it('rejects a device network on managed or routing devices, unknown networks and both at once', () => {
+    const yaml = site(`      - id: sw2
+        type: switch
+        vlan: 10   # <1>
+        ports: [{ range: f0/1, mode: access, vlan: 10 }]
+      - { id: u1, type: switch, vlan: 77 }   # <2>
+      - { id: u2, type: switch, lan: nowhere }   # <3>
+      - { id: u3, type: switch, vlan: 10, lan: office }   # <4>
+      - { id: u4, type: switch, uplink: sw9:f0/1 }   # <5>`);
+    expect(found(yaml)).toEqual([
+      `NETWORK_MISMATCH@${at(yaml, 1)}`,
+      `REF_UNKNOWN@${at(yaml, 2)}`,
+      `REF_UNKNOWN@${at(yaml, 3)}`,
+      `NETWORK_MISMATCH@${at(yaml, 4)}`,
+      `REF_UNKNOWN@${at(yaml, 5)}`,
+    ]);
   });
 });

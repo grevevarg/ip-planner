@@ -2,7 +2,7 @@
   {
     "file": "three-companies.yaml",
     "title": "Three companies, one ISP",
-    "description": "Three sites with VLANs, a buried point-to-point cable and an IPsec tunnel. Illustrative values only."
+    "description": "A reference with three ways to build a site: router-on-a-stick, redundant uplinks with one unmanaged switch per VLAN, and untagged LANs on router ports. Plus a point-to-point cable and an IPsec tunnel. Illustrative values only."
   },
   {
     "file": "minimal.yaml",

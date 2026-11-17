@@ -17,7 +17,7 @@ import {
   type Subnet,
 } from '../ip';
 import { countBySeverity, type Diagnostic, type Path } from '../model/diagnostics';
-import { peerOf, type RDevice, type ResolvedModel, type RSite, type RVlan } from '../model/resolve';
+import { deviceLevelPeers, peerOf, type RDevice, type ResolvedModel, type RNetwork, type RSite } from '../model/resolve';
 
 /** Hidden column keys per table id. */
 export type HiddenColumns = Record<string, string[]>;
@@ -80,6 +80,18 @@ export const TABLES: Record<string, { title: string; columns: Column[] }> = {
       { key: 'gateway', label: 'WAN gateway', mono: true },
       { key: 'nat', label: 'NAT' },
       { key: 'vlans', label: 'VLANs', numeric: true },
+      { key: 'lans', label: 'LANs', numeric: true, optional: true },
+    ],
+  },
+  wans: {
+    title: 'WAN uplinks',
+    columns: [
+      { key: 'name', label: 'Uplink', optional: true },
+      { key: 'iface', label: 'Interface', mono: true },
+      { key: 'address', label: 'Address', mono: true },
+      { key: 'gateway', label: 'Gateway', mono: true },
+      { key: 'nat', label: 'NAT' },
+      { key: 'link', label: 'Link to', mono: true },
     ],
   },
   vlans: {
@@ -100,10 +112,28 @@ export const TABLES: Record<string, { title: string; columns: Column[] }> = {
       { key: 'notes', label: 'Notes' },
     ],
   },
+  lans: {
+    title: 'LANs',
+    columns: [
+      { key: 'name', label: 'LAN' },
+      { key: 'iface', label: 'Interface', mono: true },
+      { key: 'hosts', label: 'Hosts needed', numeric: true },
+      { key: 'subnet', label: 'Subnet', mono: true },
+      { key: 'mask', label: 'Mask', mono: true },
+      { key: 'gateway', label: 'Gateway', mono: true },
+      { key: 'broadcast', label: 'Broadcast', mono: true },
+      { key: 'usable', label: 'Usable range', mono: true },
+      { key: 'dhcp', label: 'DHCP' },
+      { key: 'server', label: 'Server / relay', mono: true },
+      { key: 'pool', label: 'Pool', mono: true },
+      { key: 'poolSize', label: 'Pool size', numeric: true },
+      { key: 'notes', label: 'Notes' },
+    ],
+  },
   statics: {
     title: 'Static assignments',
     columns: [
-      { key: 'vlan', label: 'VLAN', numeric: true },
+      { key: 'vlan', label: 'VLAN / LAN' },
       { key: 'name', label: 'Name' },
       { key: 'ip', label: 'Address', mono: true },
       { key: 'role', label: 'Role' },
@@ -114,11 +144,21 @@ export const TABLES: Record<string, { title: string; columns: Column[] }> = {
     columns: [
       { key: 'device', label: 'Device' },
       { key: 'iface', label: 'Interface', mono: true },
-      { key: 'vlan', label: 'VLAN', numeric: true },
+      { key: 'vlan', label: 'VLAN / LAN' },
       { key: 'address', label: 'Address', mono: true },
       { key: 'role', label: 'Role' },
       { key: 'link', label: 'Link to', mono: true },
       { key: 'description', label: 'Description', optional: true },
+    ],
+  },
+  unmanaged: {
+    title: 'Unmanaged devices',
+    columns: [
+      { key: 'device', label: 'Device' },
+      { key: 'type', label: 'Type' },
+      { key: 'network', label: 'VLAN / LAN' },
+      { key: 'link', label: 'Cabled to', mono: true },
+      { key: 'notes', label: 'Notes', optional: true },
     ],
   },
   switchports: {
@@ -241,52 +281,74 @@ function renderTable(id: string, rows: Record<string, Cell>[], hidden: HiddenCol
 
 const nameWithLock = (name: string, locked: boolean): Cell => (locked ? html(`${esc(name)} ${LOCK}`) : name);
 
-function vlanRows(site: RSite, model: ResolvedModel): Record<string, Cell>[] {
-  return site.vlans.map((vlan) => {
-    const info = vlan.info;
-    const dhcp = vlan.dhcp;
-    const hosts =
-      vlan.raw.hosts === undefined
-        ? undefined
-        : vlan.hostsNeeded !== vlan.raw.hosts
-          ? `${vlan.raw.hosts} (+${vlan.raw.growth_percent}% → ${vlan.hostsNeeded})`
-          : String(vlan.raw.hosts);
-    let server: Cell;
-    if (dhcp?.mode === 'server') server = dhcp.on ? (model.devices.get(dhcp.on)?.name ?? dhcp.on) : dhcp.server !== undefined ? formatIp(dhcp.server) : undefined;
-    else if (dhcp?.mode === 'relay') server = dhcp.server !== undefined ? formatIp(dhcp.server) : undefined;
-    let pool: Cell;
-    if (dhcp?.pool) {
-      const excluded = dhcp.exclude.length ? `<br><span class="cell-sub">excl. ${dhcp.exclude.map((r) => esc(formatRange(r))).join(', ')}</span>` : '';
-      pool = html(`${rangeHtml(dhcp.pool.value)}${dhcp.pool.auto ? ` ${AUTO}` : ''}${excluded}`);
-    }
-    const notes = [vlan.native ? 'Native VLAN' : '', vlan.raw.notes ?? ''].filter(Boolean).join('. ');
-    return {
-      id: String(vlan.id),
-      name: nameWithLock(vlan.name, vlan.locked),
-      hosts,
-      subnet: vlan.subnet ? withAuto(formatSubnet(vlan.subnet.value), vlan.subnet.auto) : undefined,
-      mask: info ? formatIp(info.mask) : undefined,
-      gateway: vlan.gateway ? withAuto(formatIp(vlan.gateway.value), vlan.gateway.auto) : undefined,
-      broadcast: info ? formatIp(info.broadcast) : undefined,
-      usable:
-        info && info.firstUsable !== null && info.lastUsable !== null
-          ? html(`${rangeHtml({ start: info.firstUsable, end: info.lastUsable })} <span class="cell-sub">(${count(info.usable)})</span>`)
-          : undefined,
-      dhcp: dhcp ? { server: 'Server', relay: 'Relay', none: 'None' }[dhcp.mode] : undefined,
-      server,
-      pool,
-      poolSize: dhcp?.pool ? count(dhcp.size) : undefined,
-      notes,
-    };
-  });
+/** The columns VLAN and LAN tables share. */
+function networkCells(net: RNetwork, model: ResolvedModel): Record<string, Cell> {
+  const info = net.info;
+  const dhcp = net.dhcp;
+  const hosts =
+    net.raw.hosts === undefined
+      ? undefined
+      : net.hostsNeeded !== net.raw.hosts
+        ? `${net.raw.hosts} (+${net.raw.growth_percent}% → ${net.hostsNeeded})`
+        : String(net.raw.hosts);
+  let server: Cell;
+  if (dhcp?.mode === 'server') server = dhcp.on ? (model.devices.get(dhcp.on)?.name ?? dhcp.on) : dhcp.server !== undefined ? formatIp(dhcp.server) : undefined;
+  else if (dhcp?.mode === 'relay') server = dhcp.server !== undefined ? formatIp(dhcp.server) : undefined;
+  let pool: Cell;
+  if (dhcp?.pool) {
+    const excluded = dhcp.exclude.length ? `<br><span class="cell-sub">excl. ${dhcp.exclude.map((r) => esc(formatRange(r))).join(', ')}</span>` : '';
+    pool = html(`${rangeHtml(dhcp.pool.value)}${dhcp.pool.auto ? ` ${AUTO}` : ''}${excluded}`);
+  }
+  const notes = [net.kind === 'vlan' && net.native ? 'Native VLAN' : '', net.raw.notes ?? ''].filter(Boolean).join('. ');
+  return {
+    name: nameWithLock(net.name, net.locked),
+    hosts,
+    subnet: net.subnet ? withAuto(formatSubnet(net.subnet.value), net.subnet.auto) : undefined,
+    mask: info ? formatIp(info.mask) : undefined,
+    gateway: net.gateway ? withAuto(formatIp(net.gateway.value), net.gateway.auto) : undefined,
+    broadcast: info ? formatIp(info.broadcast) : undefined,
+    usable:
+      info && info.firstUsable !== null && info.lastUsable !== null
+        ? html(`${rangeHtml({ start: info.firstUsable, end: info.lastUsable })} <span class="cell-sub">(${count(info.usable)})</span>`)
+        : undefined,
+    dhcp: dhcp ? { server: 'Server', relay: 'Relay', none: 'None' }[dhcp.mode] : undefined,
+    server,
+    pool,
+    poolSize: dhcp?.pool ? count(dhcp.size) : undefined,
+    notes,
+  };
 }
 
-function interfaceRows(devices: RDevice[], model: ResolvedModel): Record<string, Cell>[] {
+const vlanRows = (site: RSite, model: ResolvedModel): Record<string, Cell>[] =>
+  site.vlans.map((vlan) => ({ id: String(vlan.id), ...networkCells(vlan, model) }));
+
+const lanRows = (site: RSite, model: ResolvedModel): Record<string, Cell>[] =>
+  site.lans.map((lan) => ({ ...networkCells(lan, model), iface: `${lan.deviceId}:${lan.ifName}` }));
+
+function wanRows(site: RSite, model: ResolvedModel): Record<string, Cell>[] {
+  return site.wans.map((wan) => ({
+    name: wan.name,
+    iface: `${wan.deviceId}:${wan.ifName}`,
+    address: wan.address ? cidrText(wan.address) : undefined,
+    gateway: wan.gateway === undefined ? undefined : formatIp(wan.gateway),
+    nat: wan.nat ? 'On' : 'Off',
+    link: peerOf(model, wan.deviceId, wan.ifName),
+  }));
+}
+
+/** VLAN id or LAN name an interface sits in, for the VLAN / LAN column. */
+function networkOf(site: RSite | undefined, vlan: number | undefined, lan: string | undefined): string | undefined {
+  if (vlan !== undefined) return String(vlan);
+  if (lan !== undefined) return site?.lans.find((l) => l.id === lan)?.name ?? lan;
+  return undefined;
+}
+
+function interfaceRows(devices: RDevice[], model: ResolvedModel, site?: RSite): Record<string, Cell>[] {
   return devices.flatMap((device) =>
     device.interfaces.map((iface, index) => ({
       device: index === 0 ? nameWithLock(device.name, device.locked) : html(`<span class="cell-repeat">${esc(device.name)}</span>`),
       iface: iface.parent ? html(`<span class="subif">${esc(iface.name)}</span>`) : iface.name,
-      vlan: iface.vlan === undefined ? undefined : String(iface.vlan),
+      vlan: networkOf(site, iface.vlan, iface.lan),
       address: iface.address ? withAuto(cidrText(iface.address.value), iface.address.auto) : undefined,
       role: iface.role,
       link: peerOf(model, device.id, iface.name),
@@ -319,10 +381,31 @@ function switchportRows(site: RSite, model: ResolvedModel): Record<string, Cell>
   );
 }
 
+/** Devices with no interfaces or ports of their own (unmanaged switches and the like), which no other table shows. */
+function unmanagedRows(site: RSite, model: ResolvedModel): Record<string, Cell>[] {
+  return site.devices
+    .filter((d) => d.vlan || d.lan || (d.interfaces.length === 0 && d.ports.length === 0))
+    .map((device) => {
+      const network = device.vlan
+        ? withAuto(`${device.vlan.value} (${site.vlans.find((v) => v.id === device.vlan!.value)?.name ?? '?'})`, device.vlan.auto)
+        : device.lan
+          ? withAuto(site.lans.find((l) => l.id === device.lan!.value)?.name ?? device.lan.value, device.lan.auto)
+          : undefined;
+      const peers = deviceLevelPeers(model, device.id).map((e) => (e.ifName ? `${e.deviceId}:${e.ifName}` : e.deviceId));
+      return {
+        device: nameWithLock(device.name, device.locked),
+        type: device.type,
+        network,
+        link: peers.length ? html(peers.map(esc).join('<br>')) : undefined,
+        notes: device.raw.notes,
+      };
+    });
+}
+
 function utilisation(site: RSite): string {
   if (!site.supernet) return '';
   const total = 2 ** (32 - site.supernet.prefix);
-  const inside = site.vlans.filter((v) => v.subnet && containsSubnet(site.supernet!, v.subnet.value));
+  const inside = [...site.vlans, ...site.lans].filter((v) => v.subnet && containsSubnet(site.supernet!, v.subnet.value));
   const explicit = inside.filter((v) => !v.subnet!.auto).map((v) => v.subnet!.value);
   const auto = inside.filter((v) => v.subnet!.auto).map((v) => v.subnet!.value);
   const usedExplicit = usedAddressCount(site.supernet, explicit);
@@ -357,17 +440,25 @@ function utilisation(site: RSite): string {
 
 function siteSection(site: RSite, model: ResolvedModel, hidden: HiddenColumns): string {
   const color = site.color ?? '#51606f';
-  const statics = site.vlans.flatMap((vlan: RVlan) =>
-    vlan.statics.map((entry) => ({ vlan: String(vlan.id), name: entry.name, ip: formatIp(entry.ip), role: entry.role })),
+  const statics = [...site.vlans, ...site.lans].flatMap((net) =>
+    net.statics.map((entry) => ({
+      vlan: net.kind === 'vlan' ? String(net.id) : net.name,
+      name: entry.name,
+      ip: formatIp(entry.ip),
+      role: entry.role,
+    })),
   );
   const notes = site.raw.notes ? `<p class="plan-notes">${esc(site.raw.notes)}</p>` : '';
   return `<section class="plan-section plan-site" style="--band: ${color}; --band-ink: ${inkOn(color)}">
   <h2 class="band"><span>${esc(site.name)}${site.locked ? ` ${LOCK}` : ''}</span>${site.supernet ? `<span class="band-detail mono">${esc(formatSubnet(site.supernet))}</span>` : ''}</h2>
   ${notes}
+  ${renderTable('wans', wanRows(site, model), hidden)}
   ${renderTable('vlans', vlanRows(site, model), hidden)}
+  ${renderTable('lans', lanRows(site, model), hidden)}
   ${renderTable('statics', statics, hidden)}
-  ${renderTable('interfaces', interfaceRows(site.devices, model), hidden)}
+  ${renderTable('interfaces', interfaceRows(site.devices, model, site), hidden)}
   ${renderTable('switchports', switchportRows(site, model), hidden)}
+  ${renderTable('unmanaged', unmanagedRows(site, model), hidden)}
   ${utilisation(site)}
 </section>`;
 }
@@ -394,6 +485,7 @@ function lockedRows(model: ResolvedModel, diagnostics: Diagnostic[]): Record<str
   for (const site of model.sites) {
     add(site.name, 'Site', site.id, site.path, site.locked);
     for (const v of site.vlans) add(`${site.name} VLAN ${v.id} ${v.name}`, 'VLAN', `${site.id}:${v.id}`, v.path, v.locked);
+    for (const l of site.lans) add(`${site.name} LAN ${l.name}`, 'LAN', l.id, l.path, l.locked);
     for (const d of site.devices) add(d.name, 'Device', d.id, d.path, d.locked);
   }
   for (const link of model.links) add(link.name, 'Link', link.id, link.path, link.locked);
@@ -435,14 +527,17 @@ export function footerText(model: ResolvedModel): string {
 export function renderPlan(model: ResolvedModel, diagnostics: Diagnostic[], options: PlanOptions = {}): string {
   const hidden = options.hidden ?? {};
   const ip = (value: Ip | undefined): string | undefined => (value === undefined ? undefined : formatIp(value));
+  /** One line per WAN uplink. */
+  const stacked = (lines: string[]): Cell => (lines.length ? html(lines.map(esc).join('<br>')) : undefined);
 
   const overview = model.sites.map((site) => ({
     site: nameWithLock(site.name, site.locked),
     supernet: site.supernet ? formatSubnet(site.supernet) : undefined,
-    wan: site.wan?.address ? cidrText(site.wan.address) : undefined,
-    gateway: ip(site.wan?.gateway),
-    nat: site.wan ? (site.wan.nat ? 'On' : 'Off') : undefined,
+    wan: stacked(site.wans.map((w) => (w.address ? cidrText(w.address) : '—'))),
+    gateway: stacked(site.wans.map((w) => ip(w.gateway) ?? '—')),
+    nat: stacked(site.wans.map((w) => (w.nat ? 'On' : 'Off'))),
     vlans: String(site.vlans.length),
+    lans: site.lans.length ? String(site.lans.length) : undefined,
   }));
 
   const links = model.links.map((link) => ({

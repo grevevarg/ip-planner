@@ -66,7 +66,7 @@ export interface Netplan {
    */
   tunnels?: Tunnel[];
   /**
-   * The values you were given for locked objects, keyed by the object's id (for a VLAN use `<site-id>:<vlan-id>`, e.g. `linky:10`). Each value is a copy of the object exactly as it was handed out. When an object marked `locked: true` no longer matches its baseline, the app reports `LOCKED_CHANGED`. The `locked` flag itself is ignored in the comparison.
+   * The values you were given for locked objects, keyed by the object's id (for a VLAN use `<site-id>:<vlan-id>`, e.g. `braintech:10`; a LAN uses its own id). Each value is a copy of the object exactly as it was handed out. When an object marked `locked: true` no longer matches its baseline, the app reports `LOCKED_CHANGED`. The `locked` flag itself is ignored in the comparison.
    */
   locked_baseline?: {
     /**
@@ -122,7 +122,7 @@ export interface Diagram {
  */
 export interface ExternalGroup {
   /**
-   * Identifier of the group. Must be unique among all sites, external groups, devices, links and tunnels.
+   * Identifier of the group. Must be unique among all sites, LANs, external groups, devices, links and tunnels.
    */
   id: Slug;
   /**
@@ -147,7 +147,7 @@ export interface ExternalGroup {
  */
 export interface Device {
   /**
-   * Identifier of the device. Must be unique among all sites, external groups, devices, links and tunnels. Used in references such as `linky-r1:f0/0`.
+   * Identifier of the device. Must be unique among all sites, LANs, external groups, devices, links and tunnels. Used in references such as `braintech-r1:f0/0`.
    */
   id: Slug;
   /**
@@ -171,6 +171,18 @@ export interface Device {
    */
   ports?: Port[];
   /**
+   * For a device that is not configured per port, such as an unmanaged switch or an access point: the VLAN (of the device's site) that all its ports are in. If omitted on a device without `ports` or `interfaces`, it is inferred from what the device is cabled to (an access port, or another unmanaged device). A device sits in a VLAN or a LAN, not both.
+   */
+  vlan?: number;
+  /**
+   * Like `vlan`, but for a LAN of the device's site: an unmanaged switch plugged into the LAN's router interface. Inferred from the cabling when omitted, like `vlan`.
+   */
+  lan?: Slug;
+  /**
+   * What the device is cabled to, for a device whose interfaces are not listed, such as an unmanaged switch. `device-id:port` for a switch port or router interface, or just `device-id` for another unmanaged device. Draws a connection in the topology. Hosts can also link to the device by its id.
+   */
+  uplink?: LinkTarget;
+  /**
    * Marks the device as given and not to be changed. It is shown with a lock badge, and compared with `locked_baseline` when a baseline exists for its id.
    */
   locked?: boolean;
@@ -180,7 +192,7 @@ export interface Device {
   notes?: string;
 }
 /**
- * A routed interface. Its address may be written here, or come from the site `wan`, from a `links` entry that names it as an endpoint, or from its sub-interfaces.
+ * A routed interface. Its address may be written here, or come from the site `wan`, from a LAN it is the gateway of, from a `links` entry that names it as an endpoint, or from its sub-interfaces.
  */
 export interface Interface {
   /**
@@ -188,7 +200,7 @@ export interface Interface {
    */
   name: string;
   /**
-   * Address and prefix of the interface. Omit it for interfaces whose address comes from the site `wan` or from a link.
+   * Address and prefix of the interface. Omit it for interfaces whose address comes from the site `wan`, a LAN or a link.
    */
   address?: CIDR;
   /**
@@ -199,6 +211,10 @@ export interface Interface {
    * VLAN id (of the device's site) that this interface sits in, for example a switch SVI or a server NIC. The address must then be inside that VLAN's subnet.
    */
   vlan?: number;
+  /**
+   * Id of the LAN (of the device's site) that this interface sits in, for example a server NIC. The address must then be inside that LAN's subnet. Not needed on the router interface the LAN itself names. An interface sits in a VLAN or a LAN, not both.
+   */
+  lan?: Slug;
   /**
    * What the interface is cabled to. Draws a connection in the topology.
    */
@@ -259,7 +275,7 @@ export interface Port {
  */
 export interface Site {
   /**
-   * Identifier of the site. Must be unique among all sites, external groups, devices, links and tunnels.
+   * Identifier of the site. Must be unique among all sites, LANs, external groups, devices, links and tunnels.
    */
   id: Slug;
   /**
@@ -267,7 +283,7 @@ export interface Site {
    */
   name?: string;
   /**
-   * Address block that every VLAN subnet of the site must fit inside. VLANs without a `subnet` are auto-allocated from it.
+   * Address block that every VLAN and LAN subnet of the site must fit inside. VLANs and LANs without a `subnet` are auto-allocated from it.
    */
   supernet: CIDR;
   /**
@@ -275,13 +291,17 @@ export interface Site {
    */
   color?: string;
   /**
-   * The site's connection to the outside world.
+   * The site's connection to the outside world: one uplink, or a list of uplinks when the site has redundant connections.
    */
-  wan?: Wan;
+  wan?: Wan | Wan[];
   /**
    * VLANs of the site. VLAN ids must be unique within the site.
    */
   vlans?: Vlan[];
+  /**
+   * Untagged networks that sit directly on a router interface, without a VLAN or a sub-interface. VLANs without a `subnet` and LANs without a `subnet` are auto-allocated from the supernet together.
+   */
+  lans?: Lan[];
   /**
    * Devices located at the site.
    */
@@ -299,6 +319,10 @@ export interface Site {
  * A site's uplink: which interface faces the provider, its address and the next hop.
  */
 export interface Wan {
+  /**
+   * Display name of the uplink, such as the provider or the circuit. Shown in the WAN table and on the connection in the topology.
+   */
+  name?: string;
   /**
    * Id of the device that holds the WAN interface. Must be a device of this site.
    */
@@ -370,11 +394,11 @@ export interface Vlan {
   locked?: boolean;
 }
 /**
- * DHCP settings of a VLAN.
+ * DHCP settings of a VLAN or LAN.
  */
 export interface Dhcp {
   /**
-   * Where DHCP leases for the VLAN come from.
+   * Where DHCP leases for the VLAN or LAN come from.
    */
   mode: 'server' | 'relay' | 'none';
   /**
@@ -382,7 +406,7 @@ export interface Dhcp {
    */
   on?: Slug;
   /**
-   * Address of the DHCP server. With `mode: relay` it is where requests are relayed to, and a warning is shown if it is not inside any subnet of the same site. With `mode: server` it is optional and names a server that sits in this VLAN, so it must be inside the VLAN's subnet.
+   * Address of the DHCP server. With `mode: relay` it is where requests are relayed to, and a warning is shown if it is not inside any subnet of the same site. With `mode: server` it is optional and names a server that sits in this VLAN or LAN, so it must be inside its subnet.
    */
   server?: IPv4Address;
   /**
@@ -408,7 +432,7 @@ export interface Pool {
   end: IPv4Address;
 }
 /**
- * One hand-assigned address in a VLAN.
+ * One hand-assigned address in a VLAN or LAN.
  */
 export interface StaticEntry {
   /**
@@ -416,7 +440,7 @@ export interface StaticEntry {
    */
   name: string;
   /**
-   * The assigned address. Must be a host address inside the VLAN subnet and outside the DHCP pool.
+   * The assigned address. Must be a host address inside the subnet of its VLAN or LAN and outside the DHCP pool.
    */
   ip: IPv4Address;
   /**
@@ -425,11 +449,64 @@ export interface StaticEntry {
   role?: string;
 }
 /**
+ * An untagged network on one router interface, with no VLAN tag and no sub-interface. The interface gets the LAN's gateway as its address. Give either `hosts` (the subnet is then auto-allocated inside the site supernet) or an explicit `subnet`, or both.
+ */
+export interface Lan {
+  /**
+   * Identifier of the LAN. Must be unique among all sites, LANs, external groups, devices, links and tunnels. Interfaces of hosts in the LAN refer to it with `lan`.
+   */
+  id: Slug;
+  /**
+   * Display name. Defaults to the id.
+   */
+  name?: string;
+  /**
+   * Id of the router (or layer 3 switch) the LAN is attached to. Must be a device of this site.
+   */
+  device: Slug;
+  /**
+   * Name of the interface on that device that the LAN is plugged into. The interface must be listed under the device's `interfaces` and gets the LAN gateway as its address. If the interface already has an `address`, it is used as the gateway and its network as the subnet.
+   */
+  interface: string;
+  /**
+   * Number of host addresses needed, including the gateway. Decides the size of an auto-allocated subnet and is checked against the size of an explicit one.
+   */
+  hosts?: number;
+  /**
+   * Extra headroom added to `hosts` when sizing an auto-allocated subnet, in percent (rounded up to whole hosts).
+   */
+  growth_percent?: number;
+  /**
+   * Subnet of the LAN. Must be a network address inside the site supernet. If omitted, it is taken from the interface's `address`, or else the smallest subnet that fits `hosts` is auto-allocated.
+   */
+  subnet?: CIDR;
+  /**
+   * Address of the router interface, which is the hosts' default gateway. Defaults to the interface's `address`, or else to the first usable address of the subnet.
+   */
+  gateway?: Address;
+  /**
+   * How hosts in the LAN get their addresses. Omit for LANs that are addressed statically only.
+   */
+  dhcp?: Dhcp;
+  /**
+   * Addresses in the LAN that are assigned by hand, such as servers and printers.
+   */
+  static?: StaticEntry[];
+  /**
+   * Free text shown in the Notes column of the LAN table.
+   */
+  notes?: string;
+  /**
+   * Marks the LAN as given and not to be changed. It is shown with a lock badge, and compared with `locked_baseline` when a baseline exists for its id.
+   */
+  locked?: boolean;
+}
+/**
  * A point-to-point link between two interfaces with its own small subnet.
  */
 export interface Link {
   /**
-   * Identifier of the link. Must be unique among all sites, external groups, devices, links and tunnels.
+   * Identifier of the link. Must be unique among all sites, LANs, external groups, devices, links and tunnels.
    */
   id: Slug;
   /**
@@ -479,7 +556,7 @@ export interface LinkEnd {
  */
 export interface Tunnel {
   /**
-   * Identifier of the tunnel. Must be unique among all sites, external groups, devices, links and tunnels.
+   * Identifier of the tunnel. Must be unique among all sites, LANs, external groups, devices, links and tunnels.
    */
   id: Slug;
   /**

@@ -76,10 +76,16 @@ export function generateD2(model: ResolvedModel, options: D2Options): string {
   // Connections leave a node along the flow direction, so the name goes on the
   // other axis where no line will run through it.
   const vertical = (model.diagram.direction ?? 'down') === 'down' || model.diagram.direction === 'up';
+  /** `VLAN 10` or the LAN name under an unmanaged device, so the drawing shows which network it serves. */
+  const networkLine = (device: RDevice): string | undefined => {
+    if (device.vlan) return `VLAN ${device.vlan.value}`;
+    if (device.lan) return model.sites.find((s) => s.id === device.siteId)?.lans.find((l) => l.id === device.lan!.value)?.name ?? device.lan.value;
+    return undefined;
+  };
   const deviceLines = (device: RDevice, container: string): string[] => {
     devicePath.set(device.id, `${quote(container)}.${quote(device.id)}`);
     const icon = options.icon(device.icon);
-    const label = quote(device.name);
+    const label = quote([device.name, networkLine(device)].filter(Boolean).join('\n'));
     if (!icon) return [`  ${quote(device.id)}: ${label}`];
     return [
       `  ${quote(device.id)}: ${label} {`,
@@ -141,7 +147,7 @@ export function generateD2(model: ResolvedModel, options: D2Options): string {
 
   const connectionLabel = (c: RConnection): string | undefined => {
     if (c.kind === 'link') return [c.name, c.subnet ? formatSubnet(c.subnet) : undefined].filter(Boolean).join('\n');
-    if (c.kind === 'wan') return c.subnet ? formatSubnet(c.subnet) : undefined;
+    if (c.kind === 'wan') return [c.name, c.subnet ? formatSubnet(c.subnet) : undefined].filter(Boolean).join('\n') || undefined;
     if (c.trunkVlans) return `trunk ${c.trunkVlans.join(', ') || '(no VLANs)'}`;
     return undefined;
   };

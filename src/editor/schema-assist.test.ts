@@ -9,7 +9,7 @@ describe('schemaAt', () => {
   });
 
   it('keeps the description written at the point of use', () => {
-    expect(String(schemaAt(['sites', 0, 'supernet'])!.description)).toContain('every VLAN subnet of the site');
+    expect(String(schemaAt(['sites', 0, 'supernet'])!.description)).toContain('every VLAN and LAN subnet of the site');
   });
 
   it('looks inside oneOf branches', () => {

@@ -104,8 +104,8 @@ export function renderSchemaDocs(schema: JsonSchema, example: string): string {
   out.push('## Conventions', '');
   out.push(
     '- **Ids.** Every object has a stable `id` (a lowercase slug) that other parts of the file refer to. `name` is only display text.',
-    '- **References.** An interface is referred to as `device-id:interface-name`, for example `bluestar-r1:f0/0`.',
-    '- **Addresses.** CIDR notation is used wherever a prefix makes sense (`172.16.100.1/27`).',
+    '- **References.** An interface is referred to as `device-id:interface-name`, for example `hanabata-r1:f0/0`.',
+    '- **Addresses.** CIDR notation is used wherever a prefix makes sense (`10.10.1.1/26`).',
     '- **Auto values.** Most derived values are optional. When you leave one out the app computes it and marks it *auto* in the plan. "Copy resolved YAML" writes all auto values into the file so you can freeze them.',
     '- **Locked.** Objects marked `locked: true` are shown with a lock badge. If `locked_baseline` holds the values you were given, any difference is reported as `LOCKED_CHANGED`.',
     '- **No secrets.** Never put pre-shared keys in the file. `crypto.psk_ref` is free text such as "given by teacher".',

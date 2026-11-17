@@ -43,21 +43,22 @@ Every problem has a stable code and points at a line.
 | --- | --- |
 | `YAML_SYNTAX` | The text is not valid YAML |
 | `SCHEMA_*` | The file does not match the schema (unknown key, wrong type, missing field …) |
-| `REF_UNKNOWN` | Reference to a device, interface, VLAN or icon that does not exist |
-| `DUP_ID` | Duplicate id (shared by sites, external groups, devices, links, tunnels), VLAN id within a site, or interface name within a device |
+| `REF_UNKNOWN` | Reference to a device, interface, VLAN, LAN or icon that does not exist |
+| `DUP_ID` | Duplicate id (shared by sites, LANs, external groups, devices, links, tunnels), VLAN id within a site, or interface name within a device |
 | `VLAN_RANGE` | VLAN id outside 1–4094, or 1002–1005 |
 | `NOT_NETWORK_ADDR` | A subnet is not written with its network address |
 | `TOO_SMALL` | More hosts than usable addresses, or a /31 without `p2p: true` |
-| `OUTSIDE_SUPERNET` | VLAN subnet outside its site's supernet |
+| `OUTSIDE_SUPERNET` | VLAN or LAN subnet outside its site's supernet |
 | `OVERLAP` | Two subnets overlap, anywhere in the file |
 | `ADDR_NOT_IN_SUBNET` | Gateway, static, pool bound, DHCP server or interface address outside its subnet |
 | `ADDR_RESERVED` | Network or broadcast address used as a host |
 | `ADDR_DUP` | The same address assigned twice |
-| `ADDR_CONFLICT` | An interface's own address disagrees with the WAN or link that also sets it |
+| `ADDR_CONFLICT` | An interface's own address disagrees with the WAN, LAN or link that also sets it, or one interface is used by more than one of them |
 | `STATIC_IN_POOL` | Static address inside an explicit DHCP pool |
 | `ALLOC_FAILED` | No room (or nothing to size from) for an auto-allocated subnet |
 | `DHCP_RELAY_UNREACHABLE` | Relay server is in no subnet of the site (warning) |
 | `TRUNK_VLAN_MISSING` | Trunk allows an undefined VLAN, or a VLAN with access ports reaches no router (warning) |
+| `NETWORK_MISMATCH` | An unmanaged device's VLAN or LAN does not match what it is cabled to, or it hangs off a trunk (warning); something names both a VLAN and a LAN (error) |
 | `TUNNEL_PEER` | Tunnel underlay has no address (error) or is not a WAN/link interface (warning) |
 | `TUNNEL_SUBNET` | Tunnel subnet missing, or present for policy-based IPsec |
 | `TUNNEL_PROTECTED_OVERLAP` | The protected networks of the two sides overlap |

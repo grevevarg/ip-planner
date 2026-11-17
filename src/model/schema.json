@@ -45,7 +45,7 @@
       "items": { "$ref": "#/$defs/tunnel" }
     },
     "locked_baseline": {
-      "description": "The values you were given for locked objects, keyed by the object's id (for a VLAN use `<site-id>:<vlan-id>`, e.g. `linky:10`). Each value is a copy of the object exactly as it was handed out. When an object marked `locked: true` no longer matches its baseline, the app reports `LOCKED_CHANGED`. The `locked` flag itself is ignored in the comparison.",
+      "description": "The values you were given for locked objects, keyed by the object's id (for a VLAN use `<site-id>:<vlan-id>`, e.g. `braintech:10`; a LAN uses its own id). Each value is a copy of the object exactly as it was handed out. When an object marked `locked: true` no longer matches its baseline, the app reports `LOCKED_CHANGED`. The `locked` flag itself is ignored in the comparison.",
       "type": "object",
       "propertyNames": { "pattern": "^[a-z0-9][a-z0-9-]*(:[0-9]+)?$" },
       "additionalProperties": {
@@ -61,7 +61,7 @@
       "description": "A stable identifier: lowercase letters, digits and hyphens, starting with a letter or digit. Used to refer to the object from elsewhere in the file.",
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]*$",
-      "examples": ["linky-r1"]
+      "examples": ["braintech-r1"]
     },
     "ipv4": {
       "title": "IPv4 address",
@@ -93,7 +93,7 @@
         "title": {
           "description": "Title of the plan. Also used in the PDF footer and as the suggested file name when saving.",
           "type": "string",
-          "examples": ["Lab 5 – Linky / SilverCrest / Bluestar"]
+          "examples": ["Example – Braintech / Kokonoe Group / Hanabata Cookies"]
         },
         "authors": {
           "description": "People who wrote the plan.",
@@ -165,7 +165,7 @@
       "properties": {
         "id": {
           "$ref": "#/$defs/slug",
-          "description": "Identifier of the group. Must be unique among all sites, external groups, devices, links and tunnels."
+          "description": "Identifier of the group. Must be unique among all sites, LANs, external groups, devices, links and tunnels."
         },
         "name": {
           "description": "Display name. Defaults to the id.",
@@ -191,7 +191,7 @@
           "id": "isp",
           "name": "ISP",
           "locked": true,
-          "devices": [{ "id": "isp-r1", "type": "router", "interfaces": [{ "name": "f0/1", "address": "203.12.20.17/28" }] }]
+          "devices": [{ "id": "isp-r1", "type": "router", "interfaces": [{ "name": "f0/1", "address": "203.0.113.1/28" }] }]
         }
       ]
     },
@@ -204,7 +204,7 @@
       "properties": {
         "id": {
           "$ref": "#/$defs/slug",
-          "description": "Identifier of the site. Must be unique among all sites, external groups, devices, links and tunnels."
+          "description": "Identifier of the site. Must be unique among all sites, LANs, external groups, devices, links and tunnels."
         },
         "name": {
           "description": "Display name. Defaults to the id.",
@@ -212,7 +212,7 @@
         },
         "supernet": {
           "$ref": "#/$defs/cidr",
-          "description": "Address block that every VLAN subnet of the site must fit inside. VLANs without a `subnet` are auto-allocated from it."
+          "description": "Address block that every VLAN and LAN subnet of the site must fit inside. VLANs and LANs without a `subnet` are auto-allocated from it."
         },
         "color": {
           "description": "Colour of the site's header band in the plan and of its container in the topology, as a six-digit hex colour.",
@@ -221,13 +221,28 @@
           "examples": ["#16a34a"]
         },
         "wan": {
-          "$ref": "#/$defs/wan",
-          "description": "The site's connection to the outside world."
+          "description": "The site's connection to the outside world: one uplink, or a list of uplinks when the site has redundant connections.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/wan",
+              "description": "A single uplink."
+            },
+            {
+              "type": "array",
+              "description": "Several uplinks, for example to two providers. Each needs its own interface.",
+              "items": { "$ref": "#/$defs/wan" }
+            }
+          ]
         },
         "vlans": {
           "description": "VLANs of the site. VLAN ids must be unique within the site.",
           "type": "array",
           "items": { "$ref": "#/$defs/vlan" }
+        },
+        "lans": {
+          "description": "Untagged networks that sit directly on a router interface, without a VLAN or a sub-interface. VLANs without a `subnet` and LANs without a `subnet` are auto-allocated from the supernet together.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/lan" }
         },
         "devices": {
           "description": "Devices located at the site.",
@@ -252,6 +267,11 @@
       "additionalProperties": false,
       "required": ["device", "interface"],
       "properties": {
+        "name": {
+          "description": "Display name of the uplink, such as the provider or the circuit. Shown in the WAN table and on the connection in the topology.",
+          "type": "string",
+          "examples": ["Primary"]
+        },
         "device": {
           "$ref": "#/$defs/slug",
           "description": "Id of the device that holds the WAN interface. Must be a device of this site."
@@ -265,12 +285,12 @@
         "address": {
           "$ref": "#/$defs/cidr",
           "description": "Address and prefix of the WAN interface. May be given on the interface itself instead; if both are given they must be equal.",
-          "examples": ["203.12.20.30/28"]
+          "examples": ["203.0.113.14/28"]
         },
         "gateway": {
           "$ref": "#/$defs/ipv4",
           "description": "Next-hop address of the provider. Must be inside the WAN subnet. If another device has an interface with this address, the topology draws the WAN connection to it.",
-          "examples": ["203.12.20.17"]
+          "examples": ["203.0.113.1"]
         },
         "nat": {
           "description": "Whether the site's private addresses are translated (NAT/PAT) on this interface.",
@@ -294,7 +314,7 @@
         "name": {
           "description": "Name of the VLAN.",
           "type": "string",
-          "examples": ["Marknad"]
+          "examples": ["Research"]
         },
         "hosts": {
           "description": "Number of host addresses needed, including the gateway. Decides the size of an auto-allocated subnet and is checked against the size of an explicit one.",
@@ -341,22 +361,99 @@
           "default": false
         }
       },
-      "examples": [{ "id": 10, "name": "Marknad", "hosts": 40, "dhcp": { "mode": "server", "on": "linky-r1" } }]
+      "examples": [{ "id": 10, "name": "Research", "hosts": 40, "dhcp": { "mode": "server", "on": "braintech-r1" } }]
+    },
+    "lan": {
+      "title": "Lan",
+      "description": "An untagged network on one router interface, with no VLAN tag and no sub-interface. The interface gets the LAN's gateway as its address. Give either `hosts` (the subnet is then auto-allocated inside the site supernet) or an explicit `subnet`, or both.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "device", "interface"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/slug",
+          "description": "Identifier of the LAN. Must be unique among all sites, LANs, external groups, devices, links and tunnels. Interfaces of hosts in the LAN refer to it with `lan`."
+        },
+        "name": {
+          "description": "Display name. Defaults to the id.",
+          "type": "string",
+          "examples": ["Office"]
+        },
+        "device": {
+          "$ref": "#/$defs/slug",
+          "description": "Id of the router (or layer 3 switch) the LAN is attached to. Must be a device of this site."
+        },
+        "interface": {
+          "description": "Name of the interface on that device that the LAN is plugged into. The interface must be listed under the device's `interfaces` and gets the LAN gateway as its address. If the interface already has an `address`, it is used as the gateway and its network as the subnet.",
+          "type": "string",
+          "pattern": "^\\S+$",
+          "examples": ["f1/1"]
+        },
+        "hosts": {
+          "description": "Number of host addresses needed, including the gateway. Decides the size of an auto-allocated subnet and is checked against the size of an explicit one.",
+          "type": "integer",
+          "minimum": 1,
+          "examples": [15]
+        },
+        "growth_percent": {
+          "description": "Extra headroom added to `hosts` when sizing an auto-allocated subnet, in percent (rounded up to whole hosts).",
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "examples": [25]
+        },
+        "subnet": {
+          "$ref": "#/$defs/cidr",
+          "description": "Subnet of the LAN. Must be a network address inside the site supernet. If omitted, it is taken from the interface's `address`, or else the smallest subnet that fits `hosts` is auto-allocated."
+        },
+        "gateway": {
+          "$ref": "#/$defs/address",
+          "description": "Address of the router interface, which is the hosts' default gateway. Defaults to the interface's `address`, or else to the first usable address of the subnet."
+        },
+        "dhcp": {
+          "$ref": "#/$defs/dhcp",
+          "description": "How hosts in the LAN get their addresses. Omit for LANs that are addressed statically only."
+        },
+        "static": {
+          "description": "Addresses in the LAN that are assigned by hand, such as servers and printers.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/staticEntry" }
+        },
+        "notes": {
+          "description": "Free text shown in the Notes column of the LAN table.",
+          "type": "string"
+        },
+        "locked": {
+          "description": "Marks the LAN as given and not to be changed. It is shown with a lock badge, and compared with `locked_baseline` when a baseline exists for its id.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "examples": [
+        {
+          "id": "hanabata-office",
+          "name": "Office",
+          "device": "hanabata-r1",
+          "interface": "f2/0",
+          "hosts": 12,
+          "static": [{ "name": "printer", "ip": "10.30.10.5", "role": "label printer" }]
+        }
+      ]
     },
     "dhcp": {
       "title": "Dhcp",
-      "description": "DHCP settings of a VLAN.",
+      "description": "DHCP settings of a VLAN or LAN.",
       "type": "object",
       "additionalProperties": false,
       "required": ["mode"],
       "properties": {
         "mode": {
-          "description": "Where DHCP leases for the VLAN come from.",
+          "description": "Where DHCP leases for the VLAN or LAN come from.",
           "enum": ["server", "relay", "none"],
           "x-enumDescriptions": {
             "server": "A device of the site runs the DHCP pool itself; name it with `on`.",
             "relay": "The gateway forwards DHCP requests to the server given in `server` (ip helper-address).",
-            "none": "No DHCP in this VLAN; all hosts are static."
+            "none": "No DHCP in this network; all hosts are static."
           }
         },
         "on": {
@@ -365,7 +462,7 @@
         },
         "server": {
           "$ref": "#/$defs/ipv4",
-          "description": "Address of the DHCP server. With `mode: relay` it is where requests are relayed to, and a warning is shown if it is not inside any subnet of the same site. With `mode: server` it is optional and names a server that sits in this VLAN, so it must be inside the VLAN's subnet."
+          "description": "Address of the DHCP server. With `mode: relay` it is where requests are relayed to, and a warning is shown if it is not inside any subnet of the same site. With `mode: server` it is optional and names a server that sits in this VLAN or LAN, so it must be inside its subnet."
         },
         "pool": {
           "$ref": "#/$defs/pool",
@@ -402,7 +499,7 @@
     },
     "staticEntry": {
       "title": "StaticEntry",
-      "description": "One hand-assigned address in a VLAN.",
+      "description": "One hand-assigned address in a VLAN or LAN.",
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "ip"],
@@ -414,7 +511,7 @@
         },
         "ip": {
           "$ref": "#/$defs/ipv4",
-          "description": "The assigned address. Must be a host address inside the VLAN subnet and outside the DHCP pool."
+          "description": "The assigned address. Must be a host address inside the subnet of its VLAN or LAN and outside the DHCP pool."
         },
         "role": {
           "description": "Free text describing what the host does.",
@@ -432,7 +529,7 @@
       "properties": {
         "id": {
           "$ref": "#/$defs/slug",
-          "description": "Identifier of the device. Must be unique among all sites, external groups, devices, links and tunnels. Used in references such as `linky-r1:f0/0`."
+          "description": "Identifier of the device. Must be unique among all sites, LANs, external groups, devices, links and tunnels. Used in references such as `braintech-r1:f0/0`."
         },
         "name": {
           "description": "Display name (for example the hostname). Defaults to the id.",
@@ -468,6 +565,20 @@
           "type": "array",
           "items": { "$ref": "#/$defs/port" }
         },
+        "vlan": {
+          "description": "For a device that is not configured per port, such as an unmanaged switch or an access point: the VLAN (of the device's site) that all its ports are in. If omitted on a device without `ports` or `interfaces`, it is inferred from what the device is cabled to (an access port, or another unmanaged device). A device sits in a VLAN or a LAN, not both.",
+          "type": "integer",
+          "examples": [10]
+        },
+        "lan": {
+          "$ref": "#/$defs/slug",
+          "description": "Like `vlan`, but for a LAN of the device's site: an unmanaged switch plugged into the LAN's router interface. Inferred from the cabling when omitted, like `vlan`."
+        },
+        "uplink": {
+          "$ref": "#/$defs/linkTarget",
+          "description": "What the device is cabled to, for a device whose interfaces are not listed, such as an unmanaged switch. `device-id:port` for a switch port or router interface, or just `device-id` for another unmanaged device. Draws a connection in the topology. Hosts can also link to the device by its id.",
+          "examples": ["kokonoe-sw1:f0/1"]
+        },
         "locked": {
           "description": "Marks the device as given and not to be changed. It is shown with a lock badge, and compared with `locked_baseline` when a baseline exists for its id.",
           "type": "boolean",
@@ -481,7 +592,7 @@
     },
     "interface": {
       "title": "Interface",
-      "description": "A routed interface. Its address may be written here, or come from the site `wan`, from a `links` entry that names it as an endpoint, or from its sub-interfaces.",
+      "description": "A routed interface. Its address may be written here, or come from the site `wan`, from a LAN it is the gateway of, from a `links` entry that names it as an endpoint, or from its sub-interfaces.",
       "type": "object",
       "additionalProperties": false,
       "required": ["name"],
@@ -494,7 +605,7 @@
         },
         "address": {
           "$ref": "#/$defs/cidr",
-          "description": "Address and prefix of the interface. Omit it for interfaces whose address comes from the site `wan` or from a link."
+          "description": "Address and prefix of the interface. Omit it for interfaces whose address comes from the site `wan`, a LAN or a link."
         },
         "role": {
           "description": "What the interface is used for. Shown in the interface table.",
@@ -511,6 +622,10 @@
         "vlan": {
           "description": "VLAN id (of the device's site) that this interface sits in, for example a switch SVI or a server NIC. The address must then be inside that VLAN's subnet.",
           "type": "integer"
+        },
+        "lan": {
+          "$ref": "#/$defs/slug",
+          "description": "Id of the LAN (of the device's site) that this interface sits in, for example a server NIC. The address must then be inside that LAN's subnet. Not needed on the router interface the LAN itself names. An interface sits in a VLAN or a LAN, not both."
         },
         "link": {
           "$ref": "#/$defs/linkTarget",
@@ -600,7 +715,7 @@
       "description": "A reference to the other end of a cable: `device-id:interface-name` (an interface or switch port of that device), or just `device-id` for nodes without interfaces such as a cloud.",
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]*(:\\S+)?$",
-      "examples": ["linky-r1:f0/1", "internet"]
+      "examples": ["braintech-r1:f0/1", "internet"]
     },
     "link": {
       "title": "Link",
@@ -611,12 +726,12 @@
       "properties": {
         "id": {
           "$ref": "#/$defs/slug",
-          "description": "Identifier of the link. Must be unique among all sites, external groups, devices, links and tunnels."
+          "description": "Identifier of the link. Must be unique among all sites, LANs, external groups, devices, links and tunnels."
         },
         "name": {
           "description": "Display name. Defaults to the id.",
           "type": "string",
-          "examples": ["Nedgrävd kabel"]
+          "examples": ["Buried cable"]
         },
         "subnet": {
           "$ref": "#/$defs/cidr",
@@ -658,7 +773,7 @@
           "description": "The interface at this end, as `device-id:interface-name`. The interface must be listed under the device's `interfaces`.",
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9-]*:\\S+$",
-          "examples": ["silvercrest-r1:f0/0"]
+          "examples": ["kokonoe-r1:f0/2"]
         },
         "address": {
           "$ref": "#/$defs/address",
@@ -675,12 +790,12 @@
       "properties": {
         "id": {
           "$ref": "#/$defs/slug",
-          "description": "Identifier of the tunnel. Must be unique among all sites, external groups, devices, links and tunnels."
+          "description": "Identifier of the tunnel. Must be unique among all sites, LANs, external groups, devices, links and tunnels."
         },
         "name": {
           "description": "Display name. Defaults to the id.",
           "type": "string",
-          "examples": ["VPN Linky – Bluestar"]
+          "examples": ["VPN Braintech – Hanabata"]
         },
         "type": {
           "description": "Tunnel technology. Decides whether the tunnel has its own subnet.",
@@ -786,7 +901,7 @@
       "oneOf": [
         {
           "const": "auto",
-          "description": "All VLAN subnets of the site the tunnel device belongs to."
+          "description": "All VLAN and LAN subnets of the site the tunnel device belongs to."
         },
         {
           "type": "array",

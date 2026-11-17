@@ -38,6 +38,7 @@ export const SEVERITY = {
   TUNNEL_PROTECTED_OVERLAP: 'error',
   DHCP_RELAY_UNREACHABLE: 'warning',
   TRUNK_VLAN_MISSING: 'warning',
+  NETWORK_MISMATCH: 'warning',
   LOCKED_CHANGED: 'warning',
   ICON_REMOTE: 'warning',
 } as const satisfies Record<string, Severity>;

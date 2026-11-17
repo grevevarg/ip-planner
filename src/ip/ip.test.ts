@@ -42,7 +42,7 @@ const nets = (list: Subnet[]): string[] => list.map(formatSubnet);
 
 describe('parseIp / formatIp', () => {
   it('round-trips ordinary addresses', () => {
-    for (const s of ['0.0.0.0', '10.10.1.5', '172.16.100.1', '192.168.0.254', '255.255.255.255']) {
+    for (const s of ['0.0.0.0', '10.10.1.5', '172.16.0.1', '192.168.0.254', '255.255.255.255']) {
       expect(formatIp(ip(s))).toBe(s);
     }
   });
@@ -186,9 +186,9 @@ describe('contains / containsSubnet / overlaps', () => {
   });
 
   it('works above 128.0.0.0 (no sign problems)', () => {
-    const s = net('203.12.20.16/28');
-    expect(contains(s, ip('203.12.20.30'))).toBe(true);
-    expect(contains(s, ip('203.12.20.32'))).toBe(false);
+    const s = net('203.0.113.16/28');
+    expect(contains(s, ip('203.0.113.30'))).toBe(true);
+    expect(contains(s, ip('203.0.113.32'))).toBe(false);
     expect(contains(net('0.0.0.0/0'), ip('255.255.255.255'))).toBe(true);
   });
 

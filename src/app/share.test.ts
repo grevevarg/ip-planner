@@ -10,7 +10,7 @@ describe('share links', () => {
     expect(fragment.startsWith('#y=')).toBe(true);
     expect(fragment).toMatch(/^#y=[A-Za-z0-9+\-$]+$/);
     expect(textFromFragment(fragment)).toBe(text);
-    expect(text).toContain('Nedgrävd');
+    expect(text).toContain('Example – Braintech');
   });
 
   it('ignores fragments that are not share links', () => {
@@ -23,8 +23,8 @@ describe('share links', () => {
 
 describe('fileStem', () => {
   it('makes a safe file name from a title', () => {
-    expect(fileStem('Lab 5 – Linky / SilverCrest / Bluestar')).toBe('lab-5-linky-silvercrest-bluestar');
-    expect(fileStem('Nedgrävd kabel')).toBe('nedgravd-kabel');
+    expect(fileStem('Example – Braintech / Kokonoe Group / Hanabata Cookies')).toBe('example-braintech-kokonoe-group-hanabata-cookies');
+    expect(fileStem('Pâtisserie Hanabata')).toBe('patisserie-hanabata');
     expect(fileStem('   ')).toBe('netplan');
     expect(fileStem(undefined)).toBe('netplan');
   });
